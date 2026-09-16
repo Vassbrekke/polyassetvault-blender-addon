@@ -30,7 +30,7 @@ Local development (backend on 5000, Vite on 5173):
 | Account | Browser sign-in at `/addon-login?port=&state=`. Exchanges the JWT for a 30-day `X-Addon-Token`. |
 | Browse | `GET /api/addon/products`. **Buy** opens `/product/:id` in the browser — cards never enter Blender. |
 | Library | Purchases. **Sync to Asset Browser**, then drag from the **Asset Shelf** (bottom of the 3D View) or the **Asset Browser**. Rows in the N-panel still drag too. |
-| List | Export selected objects or the whole file as `download.blend` plus a viewport preview, `POST /api/addon/products` as `files`. |
+| List | Capture or pick a PNG thumbnail (uploaded first so the site uses it as the listing thumb), fill metadata from the scene, export `.blend`, `POST /api/addon/products` as `files`. |
 
 There is no addon Stripe endpoint. Paid checkout stays on the website. After paying, **Sync to Asset Browser**, then drag from the shelf.
 

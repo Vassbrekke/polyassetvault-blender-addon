@@ -1,7 +1,7 @@
 bl_info = {
     "name": "PolyAssetVault",
     "author": "Vassbrekke AS",
-    "version": (0, 3, 1),
+    "version": (0, 3, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar / Header PAV / Asset Shelf / File > Import",
     "description": "Browse, buy, import, and list 3D assets on the PolyAssetVault marketplace",
@@ -21,6 +21,7 @@ if "bpy" in locals():
     from . import assets as _assets
 
     from . import thumbs as _thumbs
+    from . import listing as _listing
 
     importlib.reload(_api)
     importlib.reload(_auth)
@@ -29,6 +30,7 @@ if "bpy" in locals():
     importlib.reload(_ui)
     importlib.reload(_assets)
     importlib.reload(_thumbs)
+    importlib.reload(_listing)
 
 from . import assets, operators, prefs, thumbs, ui
 

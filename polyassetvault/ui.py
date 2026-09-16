@@ -137,13 +137,55 @@ class PAV_PT_main(Panel):
             layout.label(text="Sign in on the Account tab first.")
             return
         state = context.window_manager.pav
-        col = layout.column(align=True)
+        thumb = layout.box()
+        thumb.label(text="Thumbnail")
+        from . import thumbs
+        from .api import is_png_file
+
+        icon_value = thumbs.icon_id("listing_thumb", state.listing_thumb_file)
+        if icon_value:
+            thumb.template_icon(icon_value=icon_value, scale=6.0)
+        elif is_png_file(state.listing_thumb_file):
+            thumb.label(text="PNG ready", icon="IMAGE_DATA")
+        else:
+            thumb.label(text="No PNG yet — capture or pick one.")
+        thumb.prop(state, "listing_thumb_source", text="")
+        row = thumb.row(align=True)
+        row.operator("pav.capture_thumbnail", icon="RENDER_STILL")
+        row.operator("pav.pick_thumbnail", icon="FILEBROWSER")
+
+        details = layout.box()
+        details.label(text="Listing")
+        col = details.column(align=True)
         col.prop(state, "listing_title")
+        col.prop(state, "listing_short")
         col.prop(state, "listing_description")
         col.prop(state, "listing_tags")
-        col.prop(state, "listing_price")
+        row = details.row(align=True)
+        row.prop(state, "listing_price")
+        row.prop(state, "listing_currency", text="")
+        col = details.column(align=True)
         col.prop(state, "listing_category")
+        col.prop(state, "listing_license")
         col.prop(state, "listing_status")
+        col.prop(state, "listing_video")
+
+        meta = layout.box()
+        meta.label(text="From the scene")
+        meta.operator("pav.fill_listing", icon="FILE_REFRESH")
+        col = meta.column(align=True)
+        col.prop(state, "listing_polygon")
+        row = meta.row(align=True)
+        row.prop(state, "listing_rigged")
+        row.prop(state, "listing_animated")
+        row = meta.row(align=True)
+        row.prop(state, "listing_uv")
+        row.prop(state, "listing_render_ready")
+        row.prop(state, "listing_lods")
+        col = meta.column(align=True)
+        col.prop(state, "listing_texture")
+        col.prop(state, "listing_pbr")
+        col.prop(state, "listing_engine")
         col.prop(state, "listing_scope")
         layout.operator("pav.list_asset", icon="EXPORT")
         layout.separator()

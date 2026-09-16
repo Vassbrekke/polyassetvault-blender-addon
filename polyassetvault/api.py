@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.3.1"
+ADDON_VERSION = "0.3.2"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
@@ -66,6 +66,199 @@ def category_enum_items():
     return tuple(
         (category_enum_id(c), c.replace("-", " ").title(), "") for c in CATEGORIES
     )
+
+
+# Product.category on the server has no "textures" (browse still lists it).
+PRODUCT_CATEGORIES = (
+    "3d-models",
+    "materials",
+    "animations",
+    "rigs",
+    "scenes",
+    "geometry-nodes",
+    "vfx",
+    "hdri",
+    "addons",
+    "other",
+)
+CATEGORY_POST_ALIASES = {"textures": "materials"}
+
+LICENSE_ENUM = (
+    ("CC0", "CC0", "Public domain"),
+    ("CC_BY_40", "CC BY 4.0", "Attribution"),
+    ("CC_BY_SA_40", "CC BY-SA 4.0", "Attribution-ShareAlike"),
+    ("CC_BY_NC_40", "CC BY-NC 4.0", "Attribution-NonCommercial"),
+    ("CC_BY_NC_SA_40", "CC BY-NC-SA 4.0", "Attribution-NonCommercial-ShareAlike"),
+    ("CC_BY_ND_40", "CC BY-ND 4.0", "Attribution-NoDerivatives"),
+    ("CC_BY_NC_ND_40", "CC BY-NC-ND 4.0", "Attribution-NonCommercial-NoDerivatives"),
+)
+LICENSE_API = {
+    "CC0": "CC0",
+    "CC_BY_40": "CC BY 4.0",
+    "CC_BY_SA_40": "CC BY-SA 4.0",
+    "CC_BY_NC_40": "CC BY-NC 4.0",
+    "CC_BY_NC_SA_40": "CC BY-NC-SA 4.0",
+    "CC_BY_ND_40": "CC BY-ND 4.0",
+    "CC_BY_NC_ND_40": "CC BY-NC-ND 4.0",
+}
+TEXTURE_RES_API = {
+    "res_1K": "1K",
+    "res_2K": "2K",
+    "res_4K": "4K",
+    "res_8K": "8K",
+    "res_procedural": "procedural",
+}
+PBR_API = {
+    "metallic_roughness": "metallic-roughness",
+    "specular_glossiness": "specular-glossiness",
+}
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def listing_category_slug(enum_id: str) -> str:
+    slug = category_api_slug(enum_id) or "3d-models"
+    slug = CATEGORY_POST_ALIASES.get(slug, slug)
+    if slug not in PRODUCT_CATEGORIES:
+        return "other"
+    return slug
+
+
+def license_api_value(enum_id: str) -> str:
+    return LICENSE_API.get(enum_id or "", "CC BY 4.0")
+
+
+def texture_resolution_api(enum_id: str) -> str:
+    return TEXTURE_RES_API.get(enum_id or "", "")
+
+
+def pbr_workflow_api(enum_id: str) -> str:
+    return PBR_API.get(enum_id or "", "")
+
+
+def is_png_file(path: str) -> bool:
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(8) == PNG_MAGIC
+    except OSError:
+        return False
+
+
+def listing_file_paths(thumbnail_path: str, blend_path: str) -> list[str]:
+    """PNG thumbnail first (Market treats files[0] as the listing thumb), then .blend."""
+    paths: list[str] = []
+    if is_png_file(thumbnail_path):
+        paths.append(thumbnail_path)
+    if blend_path and os.path.isfile(blend_path):
+        paths.append(blend_path)
+    return paths
+
+
+def format_file_size(nbytes: int) -> str:
+    size = max(int(nbytes or 0), 0)
+    if size < 1024:
+        return f"{size} Bytes"
+    units = ("KB", "MB", "GB")
+    value = float(size)
+    for unit in units:
+        value /= 1024.0
+        if value < 1024 or unit == "GB":
+            pretty = f"{value:.2f}".rstrip("0").rstrip(".")
+            return f"{pretty} {unit}"
+    return f"{size} Bytes"
+
+
+def build_listing_fields(
+    *,
+    title: str,
+    description: str = "",
+    short_description: str = "",
+    price: float = 0.0,
+    currency: str = "USD",
+    category: str = "3d-models",
+    tags: str = "blender",
+    status: str = "draft",
+    file_format: str = "BLEND",
+    polygon_count: str = "",
+    texture_resolution: str = "",
+    rigged: bool = False,
+    animated: bool = False,
+    file_size: str = "",
+    software_version: str = "",
+    license: str = "CC BY 4.0",
+    compatibility: Optional[Mapping[str, bool]] = None,
+    specifications: Optional[Mapping[str, Any]] = None,
+    render_ready: bool = False,
+    pbr_workflow: str = "",
+    uv_unwrapped: bool = False,
+    lods: bool = False,
+    target_engine: str = "",
+    video_preview_url: str = "",
+    pricing_type: str = "",
+) -> dict[str, str]:
+    """Multipart string fields the addon POST matches the website create form."""
+    title = (title or "").strip() or "Untitled asset"
+    description = (description or "").strip() or title
+    short = (short_description or "").strip() or description[:240]
+    currency = currency if currency in ("USD", "EUR") else "USD"
+    category = listing_category_slug(category) if category not in PRODUCT_CATEGORIES else category
+    status = status if status in ("draft", "published") else "draft"
+    license_value = LICENSE_API.get(license, license) if license else "CC BY 4.0"
+    if license_value not in LICENSE_API.values():
+        license_value = "CC BY 4.0"
+    parsed_price = float(price or 0)
+    if parsed_price < 0:
+        parsed_price = 0.0
+    pricing = pricing_type or ("free" if parsed_price == 0 else "fixed")
+    if pricing not in ("fixed", "free", "pwyw"):
+        pricing = "fixed"
+    compat = compatibility or {
+        "blender": True,
+        "maya": False,
+        "max3ds": False,
+        "cinema4d": False,
+        "unity": False,
+        "unreal": False,
+    }
+    specs = specifications or {}
+    fields = {
+        "title": title[:200],
+        "description": description[:100000],
+        "shortDescription": short[:500],
+        "price": f"{parsed_price:g}",
+        "currency": currency,
+        "category": category,
+        "tags": tags or "blender",
+        "status": status,
+        "fileFormat": (file_format or "BLEND")[:200],
+        "rigged": "true" if rigged else "false",
+        "animated": "true" if animated else "false",
+        "license": license_value,
+        "compatibility": json.dumps(dict(compat)),
+        "specifications": json.dumps(dict(specs)),
+        "renderReady": "true" if render_ready else "false",
+        "uvUnwrapped": "true" if uv_unwrapped else "false",
+        "lods": "true" if lods else "false",
+        "pricingType": pricing,
+        "delivery": json.dumps({"method": "instant", "time": "Immediate"}),
+    }
+    if polygon_count:
+        fields["polygonCount"] = str(polygon_count)[:100]
+    if texture_resolution in ("1K", "2K", "4K", "8K", "procedural"):
+        fields["textureResolution"] = texture_resolution
+    if file_size:
+        fields["fileSize"] = str(file_size)[:100]
+    if software_version:
+        fields["softwareVersion"] = str(software_version)[:200]
+    if pbr_workflow in ("metallic-roughness", "specular-glossiness"):
+        fields["pbrWorkflow"] = pbr_workflow
+    if target_engine:
+        fields["targetEngine"] = str(target_engine)[:200]
+    url = (video_preview_url or "").strip()
+    if url.startswith("http://") or url.startswith("https://"):
+        fields["videoPreviewUrl"] = url
+    return fields
 
 
 class AddonAPIError(Exception):
@@ -133,6 +326,12 @@ def file_content_type(filename: str) -> str:
     name = (filename or "").lower()
     if name.endswith(".blend"):
         return "application/x-blender"
+    if name.endswith(".png"):
+        return "image/png"
+    if name.endswith(".jpg") or name.endswith(".jpeg"):
+        return "image/jpeg"
+    if name.endswith(".webp"):
+        return "image/webp"
     guessed = mimetypes.guess_type(filename or "")[0]
     return guessed or "application/octet-stream"
 

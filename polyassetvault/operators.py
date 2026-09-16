@@ -12,19 +12,26 @@ import zipfile
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy.types import FileHandler, Menu, Operator, OperatorFileListElement, PropertyGroup, UIList
+from bpy_extras.io_utils import ImportHelper
 
 from .api import (
     ADDON_VERSION,
     CATEGORIES,
+    LICENSE_ENUM,
     AddonAPIError,
     AddonClient,
+    build_listing_fields,
     category_api_slug,
     category_enum_id,
     category_enum_items,
     find_cached_asset,
+    is_png_file,
+    listing_file_paths,
     login_page_url,
+    pbr_workflow_api,
     product_cache_dir,
     product_page_url,
+    texture_resolution_api,
 )
 from .auth import LoginCallback
 from .prefs import get_prefs
@@ -281,6 +288,52 @@ class PAV_PG_state(PropertyGroup):
         ),
         default="SELECTED",
     )
+    listing_short: StringProperty(name="Short description", default="")
+    listing_license: EnumProperty(name="License", items=LICENSE_ENUM, default="CC_BY_40")
+    listing_currency: EnumProperty(
+        name="Currency",
+        items=(("USD", "USD", ""), ("EUR", "EUR", "")),
+        default="USD",
+    )
+    listing_thumb_source: EnumProperty(
+        name="Thumbnail",
+        items=(
+            ("VIEWPORT", "3D Viewport", "OpenGL capture of the active 3D View"),
+            ("CAMERA", "Camera render", "Render the scene camera"),
+            ("FILE", "Image file", "Use a PNG/JPEG you pick"),
+        ),
+        default="VIEWPORT",
+    )
+    listing_thumb_file: StringProperty(name="Thumbnail file", default="", subtype="FILE_PATH")
+    listing_polygon: StringProperty(name="Polygons", default="")
+    listing_rigged: BoolProperty(name="Rigged", default=False)
+    listing_animated: BoolProperty(name="Animated", default=False)
+    listing_uv: BoolProperty(name="UV unwrapped", default=False)
+    listing_render_ready: BoolProperty(name="Render-ready", default=False)
+    listing_lods: BoolProperty(name="LODs", default=False)
+    listing_texture: EnumProperty(
+        name="Textures",
+        items=(
+            ("AUTO", "Auto", "Omit unless a size was detected"),
+            ("res_1K", "1K", ""),
+            ("res_2K", "2K", ""),
+            ("res_4K", "4K", ""),
+            ("res_8K", "8K", ""),
+            ("res_procedural", "Procedural", ""),
+        ),
+        default="AUTO",
+    )
+    listing_pbr: EnumProperty(
+        name="PBR",
+        items=(
+            ("NONE", "None", ""),
+            ("metallic_roughness", "Metallic-Roughness", ""),
+            ("specular_glossiness", "Specular-Glossiness", ""),
+        ),
+        default="NONE",
+    )
+    listing_engine: StringProperty(name="Target engine", default="Blender")
+    listing_video: StringProperty(name="Video preview URL", default="")
     status_message: StringProperty(name="Status", default="")
     account_name: StringProperty(default="")
     account_type: StringProperty(default="")
@@ -803,7 +856,13 @@ class PAV_OT_list_asset(Operator):
         return self._begin(context, modal=False)
 
     def _validate(self, context):
+        from .listing import apply_stats, scene_stats
+
         state = context.window_manager.pav
+        try:
+            apply_stats(state, scene_stats(context), overwrite=False)
+        except Exception:
+            pass
         title = (state.listing_title or "").strip()
         if not title:
             return "Give the listing a title."
@@ -815,6 +874,8 @@ class PAV_OT_list_asset(Operator):
         return ""
 
     def _begin(self, context, modal: bool):
+        from .listing import file_size_label, write_thumbnail
+
         err = self._validate(context)
         if err:
             self.report({"ERROR"}, err)
@@ -824,10 +885,24 @@ class PAV_OT_list_asset(Operator):
         title = (state.listing_title or "").strip()
         tmp = tempfile.mkdtemp(prefix="pav_list_")
         blend_path = os.path.join(tmp, _safe_blend_name(title))
-        thumb_path = os.path.join(tmp, "preview.png")
+        thumb_path = os.path.join(tmp, "thumbnail.png")
         try:
             _export_listing_blend(context, blend_path, state.listing_scope)
-            self._write_thumbnail(context, thumb_path)
+            if is_png_file(state.listing_thumb_file):
+                import shutil
+
+                shutil.copy2(state.listing_thumb_file, thumb_path)
+            else:
+                written = write_thumbnail(
+                    context,
+                    thumb_path,
+                    state.listing_thumb_source,
+                    state.listing_thumb_file,
+                )
+                if written and written != thumb_path and is_png_file(written):
+                    import shutil
+
+                    shutil.copy2(written, thumb_path)
         except Exception as exc:
             self.report({"ERROR"}, f"Could not export: {exc}")
             return {"CANCELLED"}
@@ -836,25 +911,49 @@ class PAV_OT_list_asset(Operator):
             self.report({"ERROR"}, "Did not write a .blend to upload. Try Entire file.")
             return {"CANCELLED"}
 
-        # Preview first so the API treats it as thumbnail; .blend is the downloadable asset.
-        files = []
-        if os.path.isfile(thumb_path):
-            files.append(thumb_path)
-        files.append(blend_path)
-        fields = {
-            "title": title,
-            "description": state.listing_description or title,
-            "shortDescription": (state.listing_description or title)[:240],
-            "price": f"{float(state.listing_price or 0):g}",
-            "currency": "USD",
-            "category": category_api_slug(state.listing_category) or "3d-models",
-            "tags": state.listing_tags or "blender",
-            "status": state.listing_status,
-            "fileFormat": "BLEND",
-            "softwareVersion": getattr(bpy.app, "version_string", ""),
-            "compatibility": '{"blender": true}',
-            "license": "CC BY 4.0",
-        }
+        files = listing_file_paths(thumb_path, blend_path)
+        if not files or not is_png_file(files[0]):
+            self.report(
+                {"ERROR"},
+                "Need a PNG thumbnail first. Capture the viewport or pick an image on the List tab.",
+            )
+            return {"CANCELLED"}
+        if not any(path.lower().endswith(".blend") for path in files):
+            self.report({"ERROR"}, "Did not write a .blend to upload. Try Entire file.")
+            return {"CANCELLED"}
+
+        version = str(getattr(bpy.app, "version_string", "") or "").strip()
+        fields = build_listing_fields(
+            title=title,
+            description=state.listing_description or title,
+            short_description=state.listing_short or state.listing_description or title,
+            price=float(state.listing_price or 0),
+            currency=state.listing_currency or "USD",
+            category=state.listing_category,
+            tags=state.listing_tags or "blender",
+            status=state.listing_status,
+            file_format="BLEND",
+            polygon_count=state.listing_polygon,
+            texture_resolution=texture_resolution_api(state.listing_texture),
+            rigged=bool(state.listing_rigged),
+            animated=bool(state.listing_animated),
+            file_size=file_size_label(blend_path),
+            software_version=f"Blender {version}".strip(),
+            license=state.listing_license,
+            render_ready=bool(state.listing_render_ready),
+            pbr_workflow=pbr_workflow_api(state.listing_pbr),
+            uv_unwrapped=bool(state.listing_uv),
+            lods=bool(state.listing_lods),
+            target_engine=state.listing_engine,
+            video_preview_url=state.listing_video,
+            specifications={
+                "polygonCount": int(state.listing_polygon) if str(state.listing_polygon).isdigit() else 0,
+                "fileFormats": ["BLEND"],
+                "software": ["Blender"],
+                "version": version,
+                "compatibility": ["Blender"],
+            },
+        )
         client = _client(context)
         if not modal:
             return self._finish_upload(context, client, fields, files, title, state.listing_status)
@@ -922,10 +1021,19 @@ class PAV_OT_list_asset(Operator):
             for asset in assets
             if isinstance(asset, dict)
         )
+        has_thumb = any(
+            bool((asset or {}).get("isThumbnail"))
+            or str((asset or {}).get("type") or "") == "image"
+            or str((asset or {}).get("mimeType") or "").startswith("image/")
+            for asset in assets
+            if isinstance(asset, dict)
+        )
         removed = created.get("removedFiles") or []
         if created.get("savedAsDraft") or created.get("_http_status") == 207 or removed or (assets and not has_blend):
             detail = removed or created.get("warnings") or created.get("errors") or created.get("message") or "no .blend in the listing"
             self.report({"ERROR"}, f"Listing saved but the .blend was not kept: {detail}")
+        elif not has_thumb:
+            self.report({"WARNING"}, "Listed, but the site did not keep the PNG as thumbnail — edit Files on the website.")
         elif created.get("errors"):
             self.report({"WARNING"}, f"Listed with warnings: {created.get('errors')}")
         product_id = str(
@@ -936,6 +1044,8 @@ class PAV_OT_list_asset(Operator):
         )
         state = context.window_manager.pav
         extra = " with .blend" if has_blend else " (check Files on the website)"
+        if has_thumb:
+            extra += " and thumbnail"
         state.status_message = f"Listed '{title}' as {status}{extra}" + (f" ({product_id})" if product_id else "")
         try:
             bpy.ops.pav.refresh_mine()
@@ -949,27 +1059,63 @@ class PAV_OT_list_asset(Operator):
             context.window_manager.event_timer_remove(self._timer)
             self._timer = None
 
-    def _write_thumbnail(self, context, path: str) -> None:
-        scene = context.scene
-        render = scene.render
-        old_path = render.filepath
-        old_format = render.image_settings.file_format
-        old_x = render.resolution_x
-        old_y = render.resolution_y
-        old_pct = render.resolution_percentage
-        try:
-            render.filepath = path
-            render.image_settings.file_format = "PNG"
-            render.resolution_x = min(old_x, 768)
-            render.resolution_y = min(old_y, 768)
-            render.resolution_percentage = min(old_pct, 50)
-            bpy.ops.render.opengl(write_still=True)
-        finally:
-            render.filepath = old_path
-            render.image_settings.file_format = old_format
-            render.resolution_x = old_x
-            render.resolution_y = old_y
-            render.resolution_percentage = old_pct
+
+class PAV_OT_fill_listing(Operator):
+    bl_idname = "pav.fill_listing"
+    bl_label = "Fill from scene"
+    bl_description = "Read title, tags, polygons, rig, animation, UVs, and PBR from the current file"
+
+    def execute(self, context):
+        from .listing import apply_stats, scene_stats
+
+        apply_stats(context.window_manager.pav, scene_stats(context), overwrite=True)
+        self.report({"INFO"}, "Listing fields filled from the scene.")
+        return {"FINISHED"}
+
+
+class PAV_OT_capture_thumbnail(Operator):
+    bl_idname = "pav.capture_thumbnail"
+    bl_label = "Capture thumbnail"
+    bl_description = "Write a PNG from the 3D View or the camera and use it as the listing thumbnail"
+
+    def execute(self, context):
+        from .listing import thumb_cache_path, write_thumbnail
+
+        state = context.window_manager.pav
+        dest = thumb_cache_path(context)
+        written = write_thumbnail(context, dest, state.listing_thumb_source, state.listing_thumb_file)
+        if not written or not is_png_file(written):
+            self.report({"ERROR"}, "Could not write a PNG thumbnail. Pick an image file instead.")
+            return {"CANCELLED"}
+        state.listing_thumb_file = written
+        self.report({"INFO"}, "Thumbnail captured.")
+        return {"FINISHED"}
+
+
+class PAV_OT_pick_thumbnail(Operator, ImportHelper):
+    bl_idname = "pav.pick_thumbnail"
+    bl_label = "Pick thumbnail"
+    bl_description = "Use a PNG or JPEG as the listing thumbnail"
+    filename_ext = ".png"
+    filter_glob: StringProperty(default="*.png;*.jpg;*.jpeg;*.webp", options={"HIDDEN"})
+
+    def execute(self, context):
+        from .listing import thumb_cache_path, write_thumbnail
+
+        src = self.filepath
+        if not src or not os.path.isfile(src):
+            self.report({"ERROR"}, "Pick an image file.")
+            return {"CANCELLED"}
+        dest = thumb_cache_path(context)
+        written = write_thumbnail(context, dest, "FILE", src)
+        if not written or not is_png_file(written):
+            self.report({"ERROR"}, "Could not convert that image to PNG.")
+            return {"CANCELLED"}
+        state = context.window_manager.pav
+        state.listing_thumb_source = "FILE"
+        state.listing_thumb_file = written
+        self.report({"INFO"}, "Thumbnail set.")
+        return {"FINISHED"}
 
 
 class PAV_OT_open_prefs(Operator):
@@ -1210,6 +1356,9 @@ CLASSES = (
     PAV_OT_drop_files,
     PAV_FH_blend,
     PAV_OT_list_asset,
+    PAV_OT_fill_listing,
+    PAV_OT_capture_thumbnail,
+    PAV_OT_pick_thumbnail,
     PAV_OT_open_prefs,
     PAV_OT_show_asset_shelf,
     PAV_OT_open_asset_browser,

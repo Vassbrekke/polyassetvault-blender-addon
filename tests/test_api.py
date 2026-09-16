@@ -242,6 +242,50 @@ class ApiTests(unittest.TestCase):
         self.assertIn(b"filename=\"download.blend\"", body)
         self.assertIn(b"ABC", body)
 
+    def test_listing_fields_thumbnail_first(self):
+        fields = api.build_listing_fields(
+            title="Lamp",
+            description="A lamp",
+            short_description="Lamp",
+            price=0,
+            category="cat_3d_models",
+            tags="blender, pbr",
+            rigged=True,
+            license="CC_BY_40",
+            texture_resolution="2K",
+            pbr_workflow="metallic-roughness",
+            polygon_count="1200",
+            software_version="Blender 5.2.2",
+            file_size="1.5 MB",
+        )
+        self.assertEqual(fields["category"], "3d-models")
+        self.assertEqual(fields["license"], "CC BY 4.0")
+        self.assertEqual(fields["pricingType"], "free")
+        self.assertEqual(fields["rigged"], "true")
+        self.assertEqual(fields["animated"], "false")
+        self.assertEqual(fields["textureResolution"], "2K")
+        self.assertEqual(fields["pbrWorkflow"], "metallic-roughness")
+        self.assertEqual(fields["fileFormat"], "BLEND")
+        compat = json.loads(fields["compatibility"])
+        self.assertTrue(compat["blender"])
+        self.assertFalse(compat["maya"])
+        self.assertEqual(api.listing_category_slug("cat_textures"), "materials")
+        self.assertEqual(api.license_api_value("CC_BY_SA_40"), "CC BY-SA 4.0")
+        with tempfile.TemporaryDirectory() as tmp:
+            png = Path(tmp) / "thumbnail.png"
+            blend = Path(tmp) / "Lamp.blend"
+            fake = Path(tmp) / "preview.png"
+            png.write_bytes(api.PNG_MAGIC + b"rest")
+            blend.write_bytes(b"BLENDER")
+            fake.write_bytes(b"not-a-png")
+            self.assertTrue(api.is_png_file(str(png)))
+            self.assertFalse(api.is_png_file(str(fake)))
+            paths = api.listing_file_paths(str(png), str(blend))
+            self.assertEqual(paths[0], str(png))
+            self.assertEqual(paths[1], str(blend))
+            self.assertEqual(api.listing_file_paths(str(fake), str(blend)), [str(blend)])
+            self.assertEqual(api.format_file_size(2048), "2 KB")
+
     def test_preview_file_helper(self):
         self.assertTrue(api.preview_file("/tmp/cache").endswith("preview.png"))
 
