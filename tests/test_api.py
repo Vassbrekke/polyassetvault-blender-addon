@@ -242,6 +242,9 @@ class ApiTests(unittest.TestCase):
         self.assertIn(b"filename=\"download.blend\"", body)
         self.assertIn(b"ABC", body)
 
+    def test_preview_file_helper(self):
+        self.assertTrue(api.preview_file("/tmp/cache").endswith("preview.png"))
+
     def test_catalog_definition_text(self):
         text = api.catalog_definition_text()
         self.assertIn("VERSION 1", text)

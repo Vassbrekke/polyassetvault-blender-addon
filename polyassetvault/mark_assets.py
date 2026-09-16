@@ -1,7 +1,7 @@
-"""Run inside background Blender: mark objects/collections as assets and save.
+"""Run inside background Blender: mark assets, apply marketplace preview, save.
 
-Invoked as: blender --background file.blend --python mark_assets.py
-Env: PAV_TITLE, PAV_AUTHOR, PAV_CATALOG_ID
+Invoked as: blender --factory-startup --background file.blend --python mark_assets.py
+Env: PAV_TITLE, PAV_AUTHOR, PAV_CATALOG_ID, PAV_PREVIEW
 """
 
 import os
@@ -10,6 +10,7 @@ import bpy
 TITLE = os.environ.get("PAV_TITLE", "")
 AUTHOR = os.environ.get("PAV_AUTHOR", "")
 CATALOG = os.environ.get("PAV_CATALOG_ID", "")
+PREVIEW = os.environ.get("PAV_PREVIEW", "")
 
 SKIP_OBJECT_TYPES = {"CAMERA", "LIGHT", "SPEAKER", "LATTICE"}
 
@@ -35,12 +36,38 @@ def _apply_meta(id_block) -> None:
             pass
 
 
+def _apply_preview(id_block) -> None:
+    if not PREVIEW or not os.path.isfile(PREVIEW):
+        return
+    try:
+        with bpy.context.temp_override(id=id_block):
+            bpy.ops.ed.lib_id_load_custom_preview(filepath=PREVIEW)
+        return
+    except Exception:
+        pass
+    try:
+        img = bpy.data.images.load(PREVIEW, check_existing=True)
+        try:
+            img.scale(256, 256)
+        except Exception:
+            pass
+        preview = id_block.preview_ensure()
+        width, height = img.size[0], img.size[1]
+        if width < 1 or height < 1:
+            return
+        preview.image_size = [width, height]
+        preview.image_pixels_float = list(img.pixels)
+    except Exception:
+        pass
+
+
 def _mark(id_block) -> bool:
     try:
         id_block.asset_mark()
     except Exception:
         return False
     _apply_meta(id_block)
+    _apply_preview(id_block)
     return True
 
 

@@ -71,7 +71,13 @@ class PAV_PT_main(Panel):
         )
         item = context.window_manager.pav_browse[state.browse_index] if context.window_manager.pav_browse else None
         if item:
+            from . import thumbs
+            from .operators import _preview_path
+
+            icon_value = thumbs.icon_id(item.product_id, _preview_path(context, item.product_id))
             box = layout.box()
+            if icon_value:
+                box.template_icon(icon_value=icon_value, scale=6.0)
             box.label(text=item.title)
             if item.short_description:
                 box.label(text=item.short_description)
@@ -90,6 +96,7 @@ class PAV_PT_main(Panel):
             return
         state = context.window_manager.pav
         layout.label(text="Drag a purchased row into the 3D view, or sync to the Asset Browser.")
+        layout.prop(state, "import_mode", expand=True)
         row = layout.row(align=True)
         row.operator("pav.refresh_library", icon="FILE_REFRESH")
         row.operator("pav.sync_asset_browser", icon="ASSET_MANAGER")
@@ -108,6 +115,16 @@ class PAV_PT_main(Panel):
         if context.window_manager.pav_library:
             idx = min(max(state.library_index, 0), len(context.window_manager.pav_library) - 1)
             item = context.window_manager.pav_library[idx]
+            from . import thumbs
+            from .operators import _preview_path
+
+            icon_value = thumbs.icon_id(item.product_id, _preview_path(context, item.product_id))
+            box = layout.box()
+            if icon_value:
+                box.template_icon(icon_value=icon_value, scale=6.0)
+            box.label(text=item.title)
+            if item.author:
+                box.label(text=item.author)
             row = layout.row(align=True)
             drag = row.operator("pav.drag_import", text="Drag into scene", icon="IMPORT")
             drag.product_id = item.product_id

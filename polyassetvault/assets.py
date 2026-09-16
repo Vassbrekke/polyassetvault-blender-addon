@@ -144,11 +144,14 @@ def run_mark_blend(
     filepath: str,
     title: str = "",
     author: str = "",
+    preview_path: str = "",
     timeout: int = 90,
 ) -> bool:
     if not filepath.lower().endswith(".blend") or not os.path.isfile(filepath):
         return False
-    if is_indexed(filepath):
+    preview_ok = bool(preview_path and os.path.isfile(preview_path))
+    preview_stamp = filepath + ".pavpreview"
+    if is_indexed(filepath) and (not preview_ok or os.path.isfile(preview_stamp)):
         return True
     if not blender_bin or not os.path.isfile(blender_bin) or not os.path.isfile(script):
         return False
@@ -156,6 +159,7 @@ def run_mark_blend(
     env["PAV_TITLE"] = title or ""
     env["PAV_AUTHOR"] = author or ""
     env["PAV_CATALOG_ID"] = CATALOG_UUID
+    env["PAV_PREVIEW"] = preview_path if preview_ok else ""
     try:
         result = subprocess.run(
             mark_blend_command(blender_bin, script, filepath),
@@ -169,6 +173,12 @@ def run_mark_blend(
     if result.returncode != 0:
         return False
     mark_stamp(filepath)
+    if preview_ok:
+        try:
+            with open(preview_stamp, "w", encoding="utf-8") as handle:
+                handle.write("ok\n")
+        except OSError:
+            pass
     return True
 
 
@@ -233,7 +243,7 @@ class VIEW3D_AST_polyassetvault(bpy.types.AssetShelf):
     bl_label = "PolyAssetVault"
     bl_space_type = "VIEW_3D"
     bl_options = {"DEFAULT_VISIBLE", "STORE_ENABLED_CATALOGS_IN_PREFERENCES"}
-    bl_default_preview_size = 96
+    bl_default_preview_size = 128
 
     @classmethod
     def poll(cls, context):

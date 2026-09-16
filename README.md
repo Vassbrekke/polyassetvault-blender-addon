@@ -41,7 +41,9 @@ After sign-in, open **Library** and click **Sync to Asset Browser**. That downlo
 - **Show Asset Shelf** — thumbnail strip at the bottom of the 3D View. Drag into the scene.
 - **Open Asset Browser** — turns the spare editor (e.g. the Scripting text area) into an Asset Browser. In its header pick library **PolyAssetVault**, then drag.
 
-First sync can take a while (one background Blender pass per `.blend`). The UI stays interactive and the N-panel shows `Syncing 3/12…`. Listing uploads on a background thread after a short local export.
+Sync also downloads marketplace thumbnails and stamps them as custom Asset Browser previews (no GPU render in the background). Re-sync to fill missing thumbs.
+
+Other entry points (BlenderKit-style): **PAV** in the 3D View header, **File → Import → PolyAssetVault Library**, **Add → PolyAssetVault**. Library tab has Append/Link and a large preview of the selected purchase.
 
 
 ## Tests (no Blender)

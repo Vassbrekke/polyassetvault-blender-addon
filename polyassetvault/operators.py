@@ -11,7 +11,7 @@ import zipfile
 
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
-from bpy.types import FileHandler, Operator, OperatorFileListElement, PropertyGroup, UIList
+from bpy.types import FileHandler, Menu, Operator, OperatorFileListElement, PropertyGroup, UIList
 
 from .api import (
     ADDON_VERSION,
@@ -53,6 +53,7 @@ def _fill_products(collection, products, *, owned_default=False):
     collection.clear()
     for product in products or []:
         item = collection.add()
+        item.name = product.get("title") or "Untitled"
         item.product_id = str(product.get("productId") or "")
         item.title = product.get("title") or "Untitled"
         item.author = product.get("author") or ""
@@ -80,9 +81,9 @@ def _resolve_download_dir(context) -> str:
     return library_root(context)
 
 
-def _import_blend(filepath: str) -> list:
+def _import_blend(filepath: str, link: bool = False) -> list:
     imported_objects = []
-    with bpy.data.libraries.load(filepath, link=False) as (data_from, data_to):
+    with bpy.data.libraries.load(filepath, link=link) as (data_from, data_to):
         data_to.objects = list(data_from.objects)
         data_to.collections = list(data_from.collections)
     scene_col = bpy.context.collection
@@ -109,10 +110,10 @@ def _import_blend(filepath: str) -> list:
     return imported_objects
 
 
-def _import_downloaded_objects(filepath: str) -> tuple[str, list]:
+def _import_downloaded_objects(filepath: str, link: bool = False) -> tuple[str, list]:
     lower = filepath.lower()
     if lower.endswith(".blend"):
-        objects = _import_blend(filepath)
+        objects = _import_blend(filepath, link=link)
         return f"Imported {len(objects)} object(s) from {os.path.basename(filepath)}", objects
     if lower.endswith(".zip"):
         extract_dir = filepath + "_extracted"
@@ -131,7 +132,7 @@ def _import_downloaded_objects(filepath: str) -> tuple[str, list]:
             )
         objects = []
         for blend in blends:
-            objects.extend(_import_blend(blend))
+            objects.extend(_import_blend(blend, link=link))
         return f"Imported {len(objects)} object(s) from {len(blends)} .blend file(s)", objects
     return f"Saved {os.path.basename(filepath)} — open it from the download folder", []
 
@@ -206,9 +207,16 @@ def _ensure_local_file(context, product_id: str) -> str:
     return _client(context).download_product(product_id, dest)
 
 
+def _preview_path(context, product_id: str) -> str:
+    from .api import preview_file, product_cache_dir
+
+    return preview_file(product_cache_dir(_resolve_download_dir(context), product_id))
+
+
 def _import_product_at(context, product_id: str, location) -> str:
     saved = _ensure_local_file(context, product_id)
-    message, objects = _import_downloaded_objects(saved)
+    link = getattr(context.window_manager.pav, "import_mode", "APPEND") == "LINK"
+    message, objects = _import_downloaded_objects(saved, link=link)
     _place_objects(objects, location)
     return message
 
@@ -277,26 +285,40 @@ class PAV_PG_state(PropertyGroup):
     account_name: StringProperty(default="")
     account_type: StringProperty(default="")
     stripe_connected: BoolProperty(default=False)
+    import_mode: EnumProperty(
+        name="Import",
+        items=(
+            ("APPEND", "Append", "Copy datablocks into this file"),
+            ("LINK", "Link", "Link from the library (lighter, stays connected)"),
+        ),
+        default="APPEND",
+    )
 
 
 class PAV_UL_products(UIList):
     bl_idname = "PAV_UL_products"
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        from . import thumbs
+
         row = layout.row(align=True)
+        preview = _preview_path(context, item.product_id)
+        icon_value = thumbs.icon_id(item.product_id, preview)
+        if icon_value:
+            row.label(text="", icon_value=icon_value)
+        else:
+            row.label(text="", icon="MESH_CUBE")
         if item.owned:
-            op = row.operator("pav.drag_import", text=item.title or "Untitled", icon="MESH_CUBE", emboss=False)
+            op = row.operator("pav.drag_import", text=item.title or "Untitled", emboss=False)
             op.product_id = item.product_id
             op.title = item.title
         else:
-            row.label(text=item.title or "Untitled", icon="MESH_CUBE")
+            row.label(text=item.title or "Untitled")
             if item.status:
                 row.label(text=item.status)
             else:
                 price = "Free" if item.price <= 0 else f"{item.currency} {item.price:g}"
                 row.label(text=price)
-            if item.author:
-                row.label(text=item.author)
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
@@ -1009,7 +1031,7 @@ class PAV_OT_sync_asset_browser(Operator):
 
     def _start(self, context):
         from .assets import ensure_user_library, library_root
-        from .api import find_cached_asset, product_cache_dir
+        from .api import find_cached_asset, preview_file, product_cache_dir
 
         try:
             ensure_user_library(context)
@@ -1030,7 +1052,12 @@ class PAV_OT_sync_asset_browser(Operator):
             self.report({"WARNING"}, "No purchases to sync.")
             return {"CANCELLED"}
         jobs = [
-            {"product_id": item.product_id, "title": item.title, "author": item.author}
+            {
+                "product_id": item.product_id,
+                "title": item.title,
+                "author": item.author,
+                "thumbnail": item.thumbnail,
+            }
             for item in items
             if item.product_id
         ]
@@ -1056,9 +1083,16 @@ class PAV_OT_sync_asset_browser(Operator):
                     self._sync["progress"] = f"Syncing {i}/{len(jobs)}: {job['title'] or job['product_id']}"
                     try:
                         dest_dir = product_cache_dir(root, job["product_id"])
+                        os.makedirs(dest_dir, exist_ok=True)
+                        preview_path = preview_file(dest_dir)
+                        thumb = job.get("thumbnail") or ""
+                        if thumb and not os.path.isfile(preview_path):
+                            try:
+                                client.download_to(thumb, preview_path)
+                            except Exception:
+                                preview_path = ""
                         saved = find_cached_asset(dest_dir)
                         if not saved:
-                            os.makedirs(dest_dir, exist_ok=True)
                             saved = client.download_product(
                                 job["product_id"], os.path.join(dest_dir, "download.bin")
                             )
@@ -1069,6 +1103,7 @@ class PAV_OT_sync_asset_browser(Operator):
                                 saved,
                                 title=job["title"],
                                 author=job["author"],
+                                preview_path=preview_path if os.path.isfile(preview_path) else "",
                             ):
                                 indexed += 1
                             else:
@@ -1129,6 +1164,35 @@ class PAV_OT_sync_asset_browser(Operator):
             self._timer = None
 
 
+class VIEW3D_MT_pav(Menu):
+    bl_label = "PolyAssetVault"
+    bl_idname = "VIEW3D_MT_pav"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("pav.login", icon="URL")
+        layout.operator("pav.browse", icon="VIEWZOOM")
+        layout.operator("pav.refresh_library", icon="FILE_REFRESH")
+        layout.operator("pav.sync_asset_browser", icon="ASSET_MANAGER")
+        layout.operator("pav.show_asset_shelf", icon="DOWNARROW_HLT")
+        layout.operator("pav.open_asset_browser", icon="WINDOW")
+        layout.separator()
+        layout.operator("pav.list_asset", icon="EXPORT")
+
+
+def _draw_view3d_header(self, context):
+    row = self.layout.row(align=True)
+    row.menu("VIEW3D_MT_pav", text="PAV")
+
+
+def _draw_file_import(self, context):
+    self.layout.operator("pav.open_asset_browser", text="PolyAssetVault Library", icon="IMPORT")
+
+
+def _draw_add_menu(self, context):
+    self.layout.operator("pav.show_asset_shelf", text="PolyAssetVault", icon="ASSET_MANAGER")
+
+
 CLASSES = (
     PAV_PG_product,
     PAV_PG_state,
@@ -1150,6 +1214,7 @@ CLASSES = (
     PAV_OT_show_asset_shelf,
     PAV_OT_open_asset_browser,
     PAV_OT_sync_asset_browser,
+    VIEW3D_MT_pav,
 )
 
 
@@ -1160,9 +1225,15 @@ def register():
     bpy.types.WindowManager.pav_browse = bpy.props.CollectionProperty(type=PAV_PG_product)
     bpy.types.WindowManager.pav_library = bpy.props.CollectionProperty(type=PAV_PG_product)
     bpy.types.WindowManager.pav_mine = bpy.props.CollectionProperty(type=PAV_PG_product)
+    bpy.types.VIEW3D_HT_header.append(_draw_view3d_header)
+    bpy.types.TOPBAR_MT_file_import.append(_draw_file_import)
+    bpy.types.VIEW3D_MT_add.append(_draw_add_menu)
 
 
 def unregister():
+    bpy.types.VIEW3D_MT_add.remove(_draw_add_menu)
+    bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
+    bpy.types.VIEW3D_HT_header.remove(_draw_view3d_header)
     del bpy.types.WindowManager.pav_mine
     del bpy.types.WindowManager.pav_library
     del bpy.types.WindowManager.pav_browse

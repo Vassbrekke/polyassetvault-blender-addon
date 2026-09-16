@@ -13,12 +13,13 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.2.3"
+ADDON_VERSION = "0.3.0"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
 LIBRARY_NAME = "PolyAssetVault"
 CATALOG_UUID = "7c2e9a10-4f3b-4c8d-9e21-00c0ffee0001"
+PREVIEW_FILENAME = "preview.png"
 
 
 def catalog_definition_text(uuid: str = CATALOG_UUID, name: str = LIBRARY_NAME) -> str:
@@ -274,6 +275,24 @@ class AddonClient:
                     handle.write(chunk)
         return final_path
 
+    def download_to(self, url_or_path: str, dest_path: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+        url = url_or_path or ""
+        if url.startswith("/"):
+            url = join_url(self.api_base, url)
+        if not url:
+            raise AddonAPIError(0, "No download URL")
+        req = urllib.request.Request(url, headers=self._headers(), method="GET")
+        directory = os.path.dirname(os.path.abspath(dest_path)) or "."
+        os.makedirs(directory, exist_ok=True)
+        with self._open(req, timeout=timeout) as resp:
+            with open(dest_path, "wb") as handle:
+                while True:
+                    chunk = resp.read(1024 * 256)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+        return dest_path
+
     # ── Auth ────────────────────────────────────────────────────────────────
 
     def issue_device_token(
@@ -372,6 +391,10 @@ def safe_product_id(product_id: str) -> str:
 
 def product_cache_dir(download_dir: str, product_id: str) -> str:
     return os.path.join(download_dir, safe_product_id(product_id))
+
+
+def preview_file(cache_dir: str) -> str:
+    return os.path.join(cache_dir, PREVIEW_FILENAME)
 
 
 def find_cached_asset(cache_dir: str) -> Optional[str]:
