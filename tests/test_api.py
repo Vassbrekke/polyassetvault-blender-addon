@@ -228,6 +228,13 @@ class ApiTests(unittest.TestCase):
         self.assertIn(b"filename=\"download.blend\"", body)
         self.assertIn(b"ABC", body)
 
+    def test_catalog_definition_text(self):
+        text = api.catalog_definition_text()
+        self.assertIn("VERSION 1", text)
+        self.assertIn(api.CATALOG_UUID, text)
+        self.assertIn("PolyAssetVault", text)
+        self.assertTrue(text.endswith("\n"))
+
     def test_product_cache_prefers_blend(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = api.product_cache_dir(tmp, "abc/../../evil id")

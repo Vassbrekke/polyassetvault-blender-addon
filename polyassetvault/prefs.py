@@ -41,7 +41,7 @@ class PAV_AddonPreferences(AddonPreferences):
     )
     download_dir: StringProperty(
         name="Download folder",
-        description="Where purchased .blend / .zip files are saved before import",
+        description="Where purchased files are stored. Leave the default to use a stable Asset Browser library folder.",
         default="//polyassetvault_library/",
         subtype="DIR_PATH",
     )

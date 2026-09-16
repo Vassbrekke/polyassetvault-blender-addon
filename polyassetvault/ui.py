@@ -89,8 +89,13 @@ class PAV_PT_main(Panel):
             layout.label(text="Sign in on the Account tab first.")
             return
         state = context.window_manager.pav
-        layout.label(text="Drag a purchased row into the 3D view to drop it.")
-        layout.operator("pav.refresh_library", icon="FILE_REFRESH")
+        layout.label(text="Drag a purchased row into the 3D view, or sync to the Asset Browser.")
+        row = layout.row(align=True)
+        row.operator("pav.refresh_library", icon="FILE_REFRESH")
+        row.operator("pav.sync_asset_browser", icon="ASSET_MANAGER")
+        row = layout.row(align=True)
+        row.operator("pav.show_asset_shelf", icon="DOWNARROW_HLT")
+        row.operator("pav.open_asset_browser", icon="WINDOW")
         layout.template_list(
             "PAV_UL_products",
             "library",
@@ -139,7 +144,31 @@ class PAV_PT_main(Panel):
             layout.operator("pav.open_listing", icon="URL")
 
 
-CLASSES = (PAV_PT_main,)
+class FILEBROWSER_PT_pav(Panel):
+    bl_label = "PolyAssetVault"
+    bl_idname = "FILEBROWSER_PT_pav"
+    bl_space_type = "FILE_BROWSER"
+    bl_region_type = "TOOLS"
+    bl_category = "PolyAssetVault"
+
+    @classmethod
+    def poll(cls, context):
+        space = context.space_data
+        return bool(space and getattr(space, "browse_mode", None) == "ASSETS")
+
+    def draw(self, context):
+        layout = self.layout
+        prefs = get_prefs(context)
+        if not prefs.get_token():
+            layout.label(text="Sign in from the 3D View N-panel first.")
+            return
+        layout.label(text="Library: PolyAssetVault")
+        layout.operator("pav.sync_asset_browser", icon="FILE_REFRESH")
+        layout.operator("pav.show_asset_shelf", icon="DOWNARROW_HLT")
+        layout.label(text="Drag thumbnails into the 3D View.")
+
+
+CLASSES = (PAV_PT_main, FILEBROWSER_PT_pav)
 
 
 def register():

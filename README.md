@@ -29,12 +29,20 @@ Local development (backend on 5000, Vite on 5173):
 |-----|--------|
 | Account | Browser sign-in at `/addon-login?port=&state=`. Exchanges the JWT for a 30-day `X-Addon-Token`. |
 | Browse | `GET /api/addon/products`. **Buy** opens `/product/:id` in the browser — cards never enter Blender. |
-| Library | `GET /api/addon/purchases`. **Drag a purchased row into the 3D view** (or drop a cached `.blend` from the file manager). Release over the viewport to append at the drop point. |
+| Library | Purchases. **Sync to Asset Browser**, then drag from the **Asset Shelf** (bottom of the 3D View) or the **Asset Browser**. Rows in the N-panel still drag too. |
 | List | Export selected objects or the whole file as `download.blend` plus a viewport preview, `POST /api/addon/products` as `files`. |
 
-There is no addon Stripe endpoint. Paid checkout stays on the website. After paying, refresh **Library**, then drag the row into the viewport.
+There is no addon Stripe endpoint. Paid checkout stays on the website. After paying, **Sync to Asset Browser**, then drag from the shelf.
 
-Listing as **Published** still goes through the same product pipeline as the web creator form (saved as draft first, then the requested status). Connect Stripe on the site before you expect payouts.
+## Asset Shelf and Asset Browser
+
+After sign-in, open **Library** and click **Sync to Asset Browser**. That downloads purchases, marks objects as Blender assets, and registers a user library named **PolyAssetVault**.
+
+- **Show Asset Shelf** — thumbnail strip at the bottom of the 3D View. Drag into the scene.
+- **Open Asset Browser** — turns the spare editor (e.g. the Scripting text area) into an Asset Browser. In its header pick library **PolyAssetVault**, then drag.
+
+First sync can take a while (one background Blender pass per `.blend`). After that, drops are native Blender appends.
+
 
 ## Tests (no Blender)
 

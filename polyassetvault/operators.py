@@ -71,11 +71,9 @@ def _active_product(collection, index):
 
 
 def _resolve_download_dir(context) -> str:
-    prefs = get_prefs(context)
-    raw = prefs.download_dir or "//polyassetvault_library/"
-    if raw.startswith("//"):
-        return bpy.path.abspath(raw)
-    return os.path.abspath(os.path.expanduser(raw))
+    from .assets import library_root
+
+    return library_root(context)
 
 
 def _import_blend(filepath: str) -> list:
@@ -198,10 +196,26 @@ def _ensure_local_file(context, product_id: str) -> str:
     dest_dir = product_cache_dir(_resolve_download_dir(context), product_id)
     cached = find_cached_asset(dest_dir)
     if cached:
+        try:
+            from .assets import ensure_user_library, index_local_file
+
+            ensure_user_library(context)
+            index_local_file(cached)
+        except Exception:
+            pass
         return cached
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, "download.bin")
-    return _client(context).download_product(product_id, dest)
+    saved = _client(context).download_product(product_id, dest)
+    try:
+        from .assets import ensure_user_library, index_local_file, refresh_asset_ui
+
+        ensure_user_library(context)
+        index_local_file(saved)
+        refresh_asset_ui(context)
+    except Exception:
+        pass
+    return saved
 
 
 def _import_product_at(context, product_id: str, location) -> str:
@@ -823,6 +837,88 @@ class PAV_OT_open_prefs(Operator):
         return {"FINISHED"}
 
 
+class PAV_OT_show_asset_shelf(Operator):
+    bl_idname = "pav.show_asset_shelf"
+    bl_label = "Show Asset Shelf"
+    bl_description = "Open the Asset Shelf at the bottom of the 3D View"
+
+    def execute(self, context):
+        from .assets import ensure_user_library, show_asset_shelf
+
+        ensure_user_library(context)
+        shown = show_asset_shelf(context)
+        if not shown:
+            self.report({"WARNING"}, "No 3D View to show the Asset Shelf on.")
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Asset Shelf is open. Pick library PolyAssetVault if it is not selected.")
+        return {"FINISHED"}
+
+
+class PAV_OT_open_asset_browser(Operator):
+    bl_idname = "pav.open_asset_browser"
+    bl_label = "Open Asset Browser"
+    bl_description = "Turn a spare editor into the Asset Browser (library PolyAssetVault)"
+
+    def execute(self, context):
+        from .assets import ensure_user_library, open_asset_browser_area, refresh_asset_ui
+
+        ensure_user_library(context)
+        refresh_asset_ui(context)
+        if not open_asset_browser_area(context):
+            self.report(
+                {"WARNING"},
+                "Split an editor, set Editor Type to Asset Browser, then choose library PolyAssetVault.",
+            )
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Asset Browser opened. Choose library PolyAssetVault in its header.")
+        return {"FINISHED"}
+
+
+class PAV_OT_sync_asset_browser(Operator):
+    bl_idname = "pav.sync_asset_browser"
+    bl_label = "Sync to Asset Browser"
+    bl_description = "Download purchases and index them so they appear in the Asset Shelf and Asset Browser"
+
+    def execute(self, context):
+        from .assets import ensure_user_library, index_local_file, refresh_asset_ui, show_asset_shelf
+
+        ensure_user_library(context)
+        wm = context.window_manager
+        items = list(wm.pav_library)
+        if not items:
+            try:
+                data = _client(context).purchases()
+            except AddonAPIError as exc:
+                _report_api(self, exc)
+                return {"CANCELLED"}
+            _fill_products(wm.pav_library, data.get("purchases") or [], owned_default=True)
+            items = list(wm.pav_library)
+        if not items:
+            self.report({"WARNING"}, "No purchases to sync.")
+            return {"CANCELLED"}
+        indexed = 0
+        failed = 0
+        for item in items:
+            if not item.product_id:
+                continue
+            try:
+                saved = _ensure_local_file(context, item.product_id)
+                indexed += index_local_file(saved, title=item.title, author=item.author)
+            except AddonAPIError as exc:
+                failed += 1
+                _report_api(self, exc)
+            except Exception:
+                failed += 1
+        refresh_asset_ui(context)
+        show_asset_shelf(context)
+        message = f"Indexed {indexed} asset file(s)"
+        if failed:
+            message += f", {failed} failed"
+        wm.pav.status_message = message
+        self.report({"INFO"}, message + ". Drag from the Asset Shelf or Asset Browser.")
+        return {"FINISHED"}
+
+
 CLASSES = (
     PAV_PG_product,
     PAV_PG_state,
@@ -841,6 +937,9 @@ CLASSES = (
     PAV_FH_blend,
     PAV_OT_list_asset,
     PAV_OT_open_prefs,
+    PAV_OT_show_asset_shelf,
+    PAV_OT_open_asset_browser,
+    PAV_OT_sync_asset_browser,
 )
 
 

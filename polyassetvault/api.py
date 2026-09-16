@@ -13,10 +13,20 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.1.1"
+ADDON_VERSION = "0.2.0"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
+LIBRARY_NAME = "PolyAssetVault"
+CATALOG_UUID = "7c2e9a10-4f3b-4c8d-9e21-00c0ffee0001"
+
+
+def catalog_definition_text(uuid: str = CATALOG_UUID, name: str = LIBRARY_NAME) -> str:
+    return (
+        "# This is an Asset Catalog Definition file for Blender.\n"
+        "VERSION 1\n"
+        f"{uuid}:{name}:{name}\n"
+    )
 
 CATEGORIES = (
     "3d-models",
