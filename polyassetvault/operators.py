@@ -17,6 +17,9 @@ from .api import (
     CATEGORIES,
     AddonAPIError,
     AddonClient,
+    category_api_slug,
+    category_enum_id,
+    category_enum_items,
     find_cached_asset,
     login_page_url,
     product_cache_dir,
@@ -25,8 +28,8 @@ from .api import (
 from .auth import LoginCallback
 from .prefs import get_prefs
 
-_CATEGORY_ITEMS = tuple((c, c.replace("-", " ").title(), "") for c in CATEGORIES)
-_CATEGORY_FILTER = (("", "All categories", ""),) + _CATEGORY_ITEMS
+_CATEGORY_ITEMS = category_enum_items()
+_CATEGORY_FILTER = (("ALL", "All categories", ""),) + _CATEGORY_ITEMS
 
 
 def _client(context) -> AddonClient:
@@ -260,7 +263,7 @@ class PAV_PG_state(PropertyGroup):
         default="ACCOUNT",
     )
     search: StringProperty(name="Search", default="")
-    category: EnumProperty(name="Category", items=_CATEGORY_FILTER, default="")
+    category: EnumProperty(name="Category", items=_CATEGORY_FILTER, default="ALL")
     browse_index: IntProperty(name="Browse index", default=0)
     library_index: IntProperty(name="Library index", default=0)
     mine_index: IntProperty(name="My listings index", default=0)
@@ -268,7 +271,7 @@ class PAV_PG_state(PropertyGroup):
     listing_description: StringProperty(name="Description", default="", subtype="NONE")
     listing_tags: StringProperty(name="Tags", description="Comma-separated", default="blender")
     listing_price: FloatProperty(name="Price", default=0.0, min=0.0, soft_max=999)
-    listing_category: EnumProperty(name="Category", items=_CATEGORY_ITEMS, default="3d-models")
+    listing_category: EnumProperty(name="Category", items=_CATEGORY_ITEMS, default="cat_3d_models")
     listing_status: EnumProperty(
         name="Status",
         items=(
@@ -455,7 +458,7 @@ class PAV_OT_browse(Operator):
         try:
             data = _client(context).browse(
                 search=state.search,
-                category=state.category,
+                category=category_api_slug(state.category),
                 page=1,
                 limit=30,
             )
@@ -786,7 +789,7 @@ class PAV_OT_list_asset(Operator):
             "shortDescription": (state.listing_description or title)[:240],
             "price": f"{price:g}",
             "currency": "USD",
-            "category": state.listing_category,
+            "category": category_api_slug(state.listing_category) or "3d-models",
             "tags": state.listing_tags or "blender",
             "status": state.listing_status,
             "fileFormat": "BLEND",
@@ -799,6 +802,9 @@ class PAV_OT_list_asset(Operator):
         except AddonAPIError as exc:
             _report_api(self, exc)
             return {"CANCELLED"}
+
+        if isinstance(created, dict) and created.get("errors"):
+            self.report({"WARNING"}, f"Listed with warnings: {created.get('errors')}")
 
         product_id = str(
             created.get("_id")

@@ -235,6 +235,16 @@ class ApiTests(unittest.TestCase):
         self.assertIn("PolyAssetVault", text)
         self.assertTrue(text.endswith("\n"))
 
+    def test_category_enum_roundtrip(self):
+        self.assertEqual(api.category_enum_id("3d-models"), "cat_3d_models")
+        self.assertEqual(api.category_api_slug("cat_3d_models"), "3d-models")
+        self.assertEqual(api.category_api_slug("geometry-nodes"), "geometry-nodes")
+        self.assertEqual(api.category_api_slug("ALL"), "")
+        self.assertEqual(api.category_api_slug("0"), "")
+        ids = [item[0] for item in api.category_enum_items()]
+        self.assertTrue(all(ident.isidentifier() for ident in ids))
+        self.assertIn("cat_3d_models", ids)
+
     def test_product_cache_prefers_blend(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = api.product_cache_dir(tmp, "abc/../../evil id")

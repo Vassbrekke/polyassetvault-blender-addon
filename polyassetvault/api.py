@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.2.0"
+ADDON_VERSION = "0.2.1"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
@@ -41,6 +41,30 @@ CATEGORIES = (
     "addons",
     "other",
 )
+
+
+def category_enum_id(slug: str) -> str:
+    """Blender EnumProperty identifiers must be valid Python identifiers (no hyphens, no leading digit)."""
+    return "cat_" + (slug or "other").replace("-", "_")
+
+
+def category_api_slug(enum_id: str) -> str:
+    """Map an enum identifier (or a raw slug) back to the API category."""
+    if not enum_id or enum_id in ("ALL", "0"):
+        return ""
+    if enum_id in CATEGORIES:
+        return enum_id
+    raw = enum_id[4:] if enum_id.startswith("cat_") else enum_id
+    slug = raw.replace("_", "-")
+    if slug in CATEGORIES:
+        return slug
+    return "other"
+
+
+def category_enum_items():
+    return tuple(
+        (category_enum_id(c), c.replace("-", " ").title(), "") for c in CATEGORIES
+    )
 
 
 class AddonAPIError(Exception):
