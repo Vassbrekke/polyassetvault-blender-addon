@@ -247,8 +247,8 @@ class ApiTests(unittest.TestCase):
 
     def test_thumbs_imports_previews_submodule(self):
         text = (ROOT / "thumbs.py").read_text()
-        self.assertIn("import bpy.utils.previews", text)
-        self.assertNotIn("bpy.utils.previews.new()", text)
+        self.assertIn("import bpy.utils.previews as previews", text)
+        self.assertIn("_pcoll = previews.new()", text)
 
     def test_catalog_definition_text(self):
         text = api.catalog_definition_text()
