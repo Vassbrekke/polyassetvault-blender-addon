@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.3.0"
+ADDON_VERSION = "0.3.1"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300

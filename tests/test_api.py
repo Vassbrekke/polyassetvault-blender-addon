@@ -245,6 +245,11 @@ class ApiTests(unittest.TestCase):
     def test_preview_file_helper(self):
         self.assertTrue(api.preview_file("/tmp/cache").endswith("preview.png"))
 
+    def test_thumbs_imports_previews_submodule(self):
+        text = (ROOT / "thumbs.py").read_text()
+        self.assertIn("import bpy.utils.previews", text)
+        self.assertNotIn("bpy.utils.previews.new()", text)
+
     def test_catalog_definition_text(self):
         text = api.catalog_definition_text()
         self.assertIn("VERSION 1", text)
