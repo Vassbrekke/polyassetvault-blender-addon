@@ -218,7 +218,21 @@ class ApiTests(unittest.TestCase):
         payload = client.logout()
         self.assertIn("Logged out", payload["message"])
 
-    def test_encode_multipart_roundtrip_markers(self):
+    def test_blend_content_type_and_multipart_order(self):
+        self.assertEqual(api.file_content_type("lamp.blend"), "application/x-blender")
+        self.assertEqual(api.file_content_type("preview.png"), "image/png")
+        body, ctype = api.encode_multipart(
+            {"title": "Lamp"},
+            [
+                ("files", "preview.png", b"\x89PNG", "image/png"),
+                ("files", "Lamp.blend", b"BLENDER-TEST", "application/x-blender"),
+            ],
+        )
+        png_at = body.find(b"filename=\"preview.png\"")
+        blend_at = body.find(b"filename=\"Lamp.blend\"")
+        self.assertGreaterEqual(png_at, 0)
+        self.assertGreater(blend_at, png_at)
+        self.assertIn(b"application/x-blender", body)
         body, ctype = api.encode_multipart(
             {"title": "Chair"},
             [("files", "download.blend", b"ABC", "application/octet-stream")],

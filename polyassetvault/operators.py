@@ -731,6 +731,44 @@ class PAV_FH_blend(FileHandler):
 # ── List / sell ──────────────────────────────────────────────────────────────
 
 
+def _safe_blend_name(title: str) -> str:
+    text = "".join(c if c.isalnum() or c in "-_" else "_" for c in (title or "asset"))
+    text = text.strip("_")[:48] or "asset"
+    return f"{text}.blend"
+
+
+def _gather_listing_datablocks(context):
+    blocks = set(context.selected_objects)
+    extra = set()
+    for obj in list(blocks):
+        data = getattr(obj, "data", None)
+        if data is not None:
+            extra.add(data)
+        for slot in getattr(obj, "material_slots", []) or []:
+            mat = getattr(slot, "material", None)
+            if mat is not None:
+                extra.add(mat)
+        anim = getattr(obj, "animation_data", None)
+        if anim is not None and getattr(anim, "action", None):
+            extra.add(anim.action)
+    blocks.update(extra)
+    return blocks
+
+
+def _export_listing_blend(context, blend_path: str, scope: str) -> None:
+    if scope == "SELECTED":
+        blocks = _gather_listing_datablocks(context)
+        if not blocks:
+            raise RuntimeError("Nothing selected to write into a .blend")
+        bpy.data.libraries.write(blend_path, blocks, fake_user=True)
+        if not os.path.isfile(blend_path) or os.path.getsize(blend_path) < 512:
+            bpy.ops.wm.save_as_mainfile(filepath=blend_path, copy=True, check_existing=False)
+    else:
+        bpy.ops.wm.save_as_mainfile(filepath=blend_path, copy=True, check_existing=False)
+    if not os.path.isfile(blend_path) or os.path.getsize(blend_path) < 512:
+        raise RuntimeError("Failed to write a .blend file (missing or empty)")
+
+
 class PAV_OT_list_asset(Operator):
     bl_idname = "pav.list_asset"
     bl_label = "Upload listing"
@@ -761,24 +799,26 @@ class PAV_OT_list_asset(Operator):
             return {"CANCELLED"}
         state = context.window_manager.pav
         state.status_message = "Exporting listing…"
+        title = (state.listing_title or "").strip()
         tmp = tempfile.mkdtemp(prefix="pav_list_")
-        blend_path = os.path.join(tmp, "download.blend")
+        blend_path = os.path.join(tmp, _safe_blend_name(title))
         thumb_path = os.path.join(tmp, "preview.png")
         try:
-            if state.listing_scope == "SELECTED":
-                datablocks = set(context.selected_objects)
-                bpy.data.libraries.write(blend_path, datablocks, fake_user=True)
-            else:
-                bpy.ops.wm.save_as_mainfile(filepath=blend_path, copy=True, check_existing=False)
+            _export_listing_blend(context, blend_path, state.listing_scope)
             self._write_thumbnail(context, thumb_path)
         except Exception as exc:
             self.report({"ERROR"}, f"Could not export: {exc}")
             return {"CANCELLED"}
 
-        files = [blend_path]
+        if not os.path.isfile(blend_path) or os.path.getsize(blend_path) < 512:
+            self.report({"ERROR"}, "Did not write a .blend to upload. Try Entire file.")
+            return {"CANCELLED"}
+
+        # Preview first so the API treats it as thumbnail; .blend is the downloadable asset.
+        files = []
         if os.path.isfile(thumb_path):
             files.append(thumb_path)
-        title = (state.listing_title or "").strip()
+        files.append(blend_path)
         fields = {
             "title": title,
             "description": state.listing_description or title,
@@ -850,16 +890,31 @@ class PAV_OT_list_asset(Operator):
         return self._apply_created(context, created, title, status)
 
     def _apply_created(self, context, created, title, status):
-        if isinstance(created, dict) and created.get("errors"):
+        created = created or {}
+        product = created.get("product") if isinstance(created.get("product"), dict) else created
+        assets = (product or {}).get("assets") or []
+        has_blend = any(
+            str((asset or {}).get("originalName") or (asset or {}).get("filename") or "")
+            .lower()
+            .endswith(".blend")
+            for asset in assets
+            if isinstance(asset, dict)
+        )
+        removed = created.get("removedFiles") or []
+        if created.get("savedAsDraft") or created.get("_http_status") == 207 or removed or (assets and not has_blend):
+            detail = removed or created.get("warnings") or created.get("errors") or created.get("message") or "no .blend in the listing"
+            self.report({"ERROR"}, f"Listing saved but the .blend was not kept: {detail}")
+        elif created.get("errors"):
             self.report({"WARNING"}, f"Listed with warnings: {created.get('errors')}")
         product_id = str(
-            (created or {}).get("_id")
-            or (created or {}).get("productId")
-            or ((created or {}).get("product") or {}).get("_id")
+            created.get("_id")
+            or created.get("productId")
+            or (product or {}).get("_id")
             or ""
         )
         state = context.window_manager.pav
-        state.status_message = f"Listed '{title}' as {status}" + (f" ({product_id})" if product_id else "")
+        extra = " with .blend" if has_blend else " (check Files on the website)"
+        state.status_message = f"Listed '{title}' as {status}{extra}" + (f" ({product_id})" if product_id else "")
         try:
             bpy.ops.pav.refresh_mine()
         except Exception:

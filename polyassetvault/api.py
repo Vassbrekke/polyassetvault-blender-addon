@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.2.2"
+ADDON_VERSION = "0.2.3"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
@@ -128,6 +128,14 @@ def encode_multipart(
     return body, f"multipart/form-data; boundary={boundary}"
 
 
+def file_content_type(filename: str) -> str:
+    name = (filename or "").lower()
+    if name.endswith(".blend"):
+        return "application/x-blender"
+    guessed = mimetypes.guess_type(filename or "")[0]
+    return guessed or "application/octet-stream"
+
+
 def _filename_from_disposition(header: Optional[str], fallback: str) -> str:
     if not header:
         return fallback
@@ -238,10 +246,14 @@ class AddonClient:
             method=method.upper(),
         )
         with self._open(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
             raw = resp.read()
             if not raw:
-                return {}
-            return json.loads(raw.decode("utf-8"))
+                return {"_http_status": status}
+            payload = json.loads(raw.decode("utf-8"))
+            if isinstance(payload, dict):
+                payload["_http_status"] = status
+            return payload
 
     def download_file(self, path: str, dest_path: str, timeout: int = TRANSFER_TIMEOUT) -> str:
         url = join_url(self.api_base, path)
@@ -331,9 +343,7 @@ class AddonClient:
         files = []
         for path in file_paths:
             name = os.path.basename(path)
-            ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            if name.lower().endswith(".blend"):
-                ctype = "application/octet-stream"
+            ctype = file_content_type(name)
             with open(path, "rb") as handle:
                 files.append(("files", name, handle.read(), ctype))
         return self.request_multipart("POST", "/api/addon/products", fields, files)
@@ -347,7 +357,7 @@ class AddonClient:
         files = []
         for path in file_paths:
             name = os.path.basename(path)
-            ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            ctype = file_content_type(name)
             with open(path, "rb") as handle:
                 files.append(("files", name, handle.read(), ctype))
         return self.request_multipart(
