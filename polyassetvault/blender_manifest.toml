@@ -1,0 +1,13 @@
+schema_version = "1.0.0"
+
+id = "polyassetvault"
+version = "0.1.1"
+name = "PolyAssetVault"
+tagline = "Browse, buy, import, and list assets on PolyAssetVault"
+maintainer = "Vassbrekke AS <hello@vassbrekke.no>"
+type = "add-on"
+website = "https://polyassetvault.com"
+tags = ["Import-Export", "Pipeline"]
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-2.0-or-later"]
+copyright = ["2026 Vassbrekke AS"]

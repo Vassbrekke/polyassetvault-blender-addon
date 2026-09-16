@@ -1,0 +1,65 @@
+# PolyAssetVault Blender addon
+
+Connect Blender 4.2+ to the PolyAssetVault marketplace. Sign in through the existing browser flow, browse listings, buy via the website checkout, import purchased `.blend` files, and list assets from the current scene.
+
+This folder is the **client**. Auth, catalog, downloads, and listing already live on the Market backend at `/api/addon/*`.
+
+## Install
+
+Blender 4.2 or newer.
+
+1. Zip the `polyassetvault` directory (or run `./pack.sh` in this folder).
+2. Blender → *Edit* → *Preferences* → *Get Extensions* → *Install from Disk…* (or *Add-ons* → *Install…* on older layouts).
+3. Enable **PolyAssetVault**.
+4. Open a 3D View, press `N`, open the **PolyAssetVault** tab.
+
+Production defaults:
+
+- Site URL: `https://polyassetvault.com`
+- API base: `https://polyassetvault.com`
+
+Local development (backend on 5000, Vite on 5173):
+
+- Site URL: `http://localhost:5173`
+- API base: `http://localhost:5000`
+
+## What it does
+
+| Tab | Action |
+|-----|--------|
+| Account | Browser sign-in at `/addon-login?port=&state=`. Exchanges the JWT for a 30-day `X-Addon-Token`. |
+| Browse | `GET /api/addon/products`. **Buy** opens `/product/:id` in the browser — cards never enter Blender. |
+| Library | `GET /api/addon/purchases`. **Drag a purchased row into the 3D view** (or drop a cached `.blend` from the file manager). Release over the viewport to append at the drop point. |
+| List | Export selected objects or the whole file as `download.blend` plus a viewport preview, `POST /api/addon/products` as `files`. |
+
+There is no addon Stripe endpoint. Paid checkout stays on the website. After paying, refresh **Library**, then drag the row into the viewport.
+
+Listing as **Published** still goes through the same product pipeline as the web creator form (saved as draft first, then the requested status). Connect Stripe on the site before you expect payouts.
+
+## Tests (no Blender)
+
+```bash
+cd blender-addon
+python3 -m unittest discover -s tests -v
+```
+
+`api.py` and `auth.py` are stdlib-only so they can run on this host without `bpy`. This machine does not currently have a `blender` binary, so the N-panel is not smoke-tested here.
+
+## Layout
+
+```
+blender-addon/
+├── pack.sh
+├── README.md
+├── tests/
+└── polyassetvault/          ← install this folder
+    ├── blender_manifest.toml
+    ├── __init__.py
+    ├── api.py
+    ├── auth.py
+    ├── prefs.py
+    ├── operators.py
+    └── ui.py
+```
+
+GPL-2.0-or-later (Blender addon requirement).
