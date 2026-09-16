@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
 import webbrowser
 import zipfile
 
@@ -199,26 +200,10 @@ def _ensure_local_file(context, product_id: str) -> str:
     dest_dir = product_cache_dir(_resolve_download_dir(context), product_id)
     cached = find_cached_asset(dest_dir)
     if cached:
-        try:
-            from .assets import ensure_user_library, index_local_file
-
-            ensure_user_library(context)
-            index_local_file(cached)
-        except Exception:
-            pass
         return cached
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, "download.bin")
-    saved = _client(context).download_product(product_id, dest)
-    try:
-        from .assets import ensure_user_library, index_local_file, refresh_asset_ui
-
-        ensure_user_library(context)
-        index_local_file(saved)
-        refresh_asset_ui(context)
-    except Exception:
-        pass
-    return saved
+    return _client(context).download_product(product_id, dest)
 
 
 def _import_product_at(context, product_id: str, location) -> str:
@@ -751,20 +736,31 @@ class PAV_OT_list_asset(Operator):
     bl_label = "Upload listing"
     bl_description = "Export the selection or this file and create a marketplace listing"
 
+    def invoke(self, context, event):
+        return self._begin(context, modal=True)
+
     def execute(self, context):
+        return self._begin(context, modal=False)
+
+    def _validate(self, context):
         state = context.window_manager.pav
         title = (state.listing_title or "").strip()
         if not title:
-            self.report({"ERROR"}, "Give the listing a title.")
-            return {"CANCELLED"}
+            return "Give the listing a title."
         price = float(state.listing_price or 0)
         if price > 0 and price < 1:
-            self.report({"ERROR"}, "Price must be free (0) or at least 1.00.")
-            return {"CANCELLED"}
+            return "Price must be free (0) or at least 1.00."
         if state.listing_scope == "SELECTED" and not context.selected_objects:
-            self.report({"ERROR"}, "Select objects to list, or switch to Entire file.")
-            return {"CANCELLED"}
+            return "Select objects to list, or switch to Entire file."
+        return ""
 
+    def _begin(self, context, modal: bool):
+        err = self._validate(context)
+        if err:
+            self.report({"ERROR"}, err)
+            return {"CANCELLED"}
+        state = context.window_manager.pav
+        state.status_message = "Exporting listing…"
         tmp = tempfile.mkdtemp(prefix="pav_list_")
         blend_path = os.path.join(tmp, "download.blend")
         thumb_path = os.path.join(tmp, "preview.png")
@@ -782,12 +778,12 @@ class PAV_OT_list_asset(Operator):
         files = [blend_path]
         if os.path.isfile(thumb_path):
             files.append(thumb_path)
-
+        title = (state.listing_title or "").strip()
         fields = {
             "title": title,
             "description": state.listing_description or title,
             "shortDescription": (state.listing_description or title)[:240],
-            "price": f"{price:g}",
+            "price": f"{float(state.listing_price or 0):g}",
             "currency": "USD",
             "category": category_api_slug(state.listing_category) or "3d-models",
             "tags": state.listing_tags or "blender",
@@ -797,41 +793,106 @@ class PAV_OT_list_asset(Operator):
             "compatibility": '{"blender": true}',
             "license": "CC BY 4.0",
         }
+        client = _client(context)
+        if not modal:
+            return self._finish_upload(context, client, fields, files, title, state.listing_status)
+
+        state.status_message = "Uploading listing… (Blender stays interactive)"
+        self._upload = {"result": None, "error": None, "title": title, "status": state.listing_status}
+        thread = threading.Thread(
+            target=self._upload_worker,
+            args=(client, fields, files),
+            daemon=True,
+        )
+        self._thread = thread
+        thread.start()
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.2, window=context.window)
+        wm.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def _upload_worker(self, client, fields, files):
         try:
-            created = _client(context).create_product(fields, files)
+            self._upload["result"] = client.create_product(fields, files)
+        except Exception as exc:
+            self._upload["error"] = exc
+
+    def modal(self, context, event):
+        if event.type == "ESC":
+            context.window_manager.pav.status_message = "Upload still running in the background…"
+            self._cleanup_timer(context)
+            return {"CANCELLED"}
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+        if self._thread.is_alive():
+            return {"PASS_THROUGH"}
+        self._cleanup_timer(context)
+        error = self._upload.get("error")
+        if error:
+            if isinstance(error, AddonAPIError):
+                _report_api(self, error)
+            else:
+                self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        return self._apply_created(
+            context,
+            self._upload.get("result") or {},
+            self._upload.get("title") or "",
+            self._upload.get("status") or "draft",
+        )
+
+    def _finish_upload(self, context, client, fields, files, title, status):
+        try:
+            created = client.create_product(fields, files)
         except AddonAPIError as exc:
             _report_api(self, exc)
             return {"CANCELLED"}
+        return self._apply_created(context, created, title, status)
 
+    def _apply_created(self, context, created, title, status):
         if isinstance(created, dict) and created.get("errors"):
             self.report({"WARNING"}, f"Listed with warnings: {created.get('errors')}")
-
         product_id = str(
-            created.get("_id")
-            or created.get("productId")
-            or (created.get("product") or {}).get("_id")
+            (created or {}).get("_id")
+            or (created or {}).get("productId")
+            or ((created or {}).get("product") or {}).get("_id")
             or ""
         )
-        state.status_message = (
-            f"Listed '{title}' as {state.listing_status}"
-            + (f" ({product_id})" if product_id else "")
-        )
-        bpy.ops.pav.refresh_mine()
+        state = context.window_manager.pav
+        state.status_message = f"Listed '{title}' as {status}" + (f" ({product_id})" if product_id else "")
+        try:
+            bpy.ops.pav.refresh_mine()
+        except Exception:
+            pass
         self.report({"INFO"}, state.status_message)
         return {"FINISHED"}
+
+    def _cleanup_timer(self, context):
+        if getattr(self, "_timer", None) is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
 
     def _write_thumbnail(self, context, path: str) -> None:
         scene = context.scene
         render = scene.render
         old_path = render.filepath
         old_format = render.image_settings.file_format
+        old_x = render.resolution_x
+        old_y = render.resolution_y
+        old_pct = render.resolution_percentage
         try:
             render.filepath = path
             render.image_settings.file_format = "PNG"
+            render.resolution_x = min(old_x, 768)
+            render.resolution_y = min(old_y, 768)
+            render.resolution_percentage = min(old_pct, 50)
             bpy.ops.render.opengl(write_still=True)
         finally:
             render.filepath = old_path
             render.image_settings.file_format = old_format
+            render.resolution_x = old_x
+            render.resolution_y = old_y
+            render.resolution_percentage = old_pct
 
 
 class PAV_OT_open_prefs(Operator):
@@ -885,10 +946,21 @@ class PAV_OT_sync_asset_browser(Operator):
     bl_label = "Sync to Asset Browser"
     bl_description = "Download purchases and index them so they appear in the Asset Shelf and Asset Browser"
 
-    def execute(self, context):
-        from .assets import ensure_user_library, index_local_file, refresh_asset_ui, show_asset_shelf
+    def invoke(self, context, event):
+        return self._start(context)
 
-        ensure_user_library(context)
+    def execute(self, context):
+        return self._start(context)
+
+    def _start(self, context):
+        from .assets import ensure_user_library, library_root
+        from .api import find_cached_asset, product_cache_dir
+
+        try:
+            ensure_user_library(context)
+        except Exception as exc:
+            self.report({"ERROR"}, f"Could not register asset library: {exc}")
+            return {"CANCELLED"}
         wm = context.window_manager
         items = list(wm.pav_library)
         if not items:
@@ -902,27 +974,104 @@ class PAV_OT_sync_asset_browser(Operator):
         if not items:
             self.report({"WARNING"}, "No purchases to sync.")
             return {"CANCELLED"}
-        indexed = 0
-        failed = 0
-        for item in items:
-            if not item.product_id:
-                continue
+        jobs = [
+            {"product_id": item.product_id, "title": item.title, "author": item.author}
+            for item in items
+            if item.product_id
+        ]
+        from .assets import run_mark_blend
+
+        blender_bin = getattr(bpy.app, "binary_path", "") or ""
+        script = os.path.join(os.path.dirname(__file__), "mark_assets.py")
+        root = library_root(context)
+        client = _client(context)
+        self._sync = {
+            "progress": "Starting…",
+            "done": False,
+            "indexed": 0,
+            "failed": 0,
+            "error": None,
+        }
+
+        def worker():
+            indexed = 0
+            failed = 0
             try:
-                saved = _ensure_local_file(context, item.product_id)
-                indexed += index_local_file(saved, title=item.title, author=item.author)
-            except AddonAPIError as exc:
-                failed += 1
-                _report_api(self, exc)
-            except Exception:
-                failed += 1
+                for i, job in enumerate(jobs, start=1):
+                    self._sync["progress"] = f"Syncing {i}/{len(jobs)}: {job['title'] or job['product_id']}"
+                    try:
+                        dest_dir = product_cache_dir(root, job["product_id"])
+                        saved = find_cached_asset(dest_dir)
+                        if not saved:
+                            os.makedirs(dest_dir, exist_ok=True)
+                            saved = client.download_product(
+                                job["product_id"], os.path.join(dest_dir, "download.bin")
+                            )
+                        if saved and saved.lower().endswith(".blend"):
+                            if run_mark_blend(
+                                blender_bin,
+                                script,
+                                saved,
+                                title=job["title"],
+                                author=job["author"],
+                            ):
+                                indexed += 1
+                            else:
+                                failed += 1
+                        elif saved and saved.lower().endswith(".zip"):
+                            indexed += 1
+                    except Exception:
+                        failed += 1
+                    self._sync["indexed"] = indexed
+                    self._sync["failed"] = failed
+            except Exception as exc:
+                self._sync["error"] = str(exc)
+            self._sync["done"] = True
+
+        self._thread = threading.Thread(target=worker, daemon=True)
+        self._thread.start()
+        wm.pav.status_message = f"Syncing {len(jobs)} purchase(s)…"
+        wm.progress_begin(0, max(len(jobs), 1))
+        self._timer = wm.event_timer_add(0.25, window=context.window)
+        wm.modal_handler_add(self)
+        self.report({"INFO"}, "Sync running in the background. Keep Blender open.")
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type == "ESC":
+            return {"RUNNING_MODAL"}
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+        state = self._sync
+        context.window_manager.pav.status_message = state.get("progress") or "Syncing…"
+        try:
+            context.window_manager.progress_update(int(state.get("indexed") or 0))
+        except Exception:
+            pass
+        if not state.get("done"):
+            return {"PASS_THROUGH"}
+        self._stop_progress(context)
+        from .assets import refresh_asset_ui, show_asset_shelf
+
         refresh_asset_ui(context)
         show_asset_shelf(context)
-        message = f"Indexed {indexed} asset file(s)"
-        if failed:
-            message += f", {failed} failed"
-        wm.pav.status_message = message
+        message = f"Indexed {state.get('indexed', 0)} asset file(s)"
+        if state.get("failed"):
+            message += f", {state.get('failed')} failed"
+        if state.get("error"):
+            message += f" ({state['error']})"
+        context.window_manager.pav.status_message = message
         self.report({"INFO"}, message + ". Drag from the Asset Shelf or Asset Browser.")
         return {"FINISHED"}
+
+    def _stop_progress(self, context):
+        try:
+            context.window_manager.progress_end()
+        except Exception:
+            pass
+        if getattr(self, "_timer", None) is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
 
 
 CLASSES = (

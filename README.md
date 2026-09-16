@@ -41,7 +41,7 @@ After sign-in, open **Library** and click **Sync to Asset Browser**. That downlo
 - **Show Asset Shelf** — thumbnail strip at the bottom of the 3D View. Drag into the scene.
 - **Open Asset Browser** — turns the spare editor (e.g. the Scripting text area) into an Asset Browser. In its header pick library **PolyAssetVault**, then drag.
 
-First sync can take a while (one background Blender pass per `.blend`). After that, drops are native Blender appends.
+First sync can take a while (one background Blender pass per `.blend`). The UI stays interactive and the N-panel shows `Syncing 3/12…`. Listing uploads on a background thread after a short local export.
 
 
 ## Tests (no Blender)

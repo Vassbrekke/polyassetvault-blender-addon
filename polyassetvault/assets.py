@@ -127,24 +127,40 @@ def mark_stamp(path: str) -> None:
         pass
 
 
-def mark_blend_file(filepath: str, title: str = "", author: str = "") -> bool:
+def mark_blend_command(blender_bin: str, script: str, filepath: str) -> list[str]:
+    return [
+        blender_bin,
+        "--factory-startup",
+        "--background",
+        filepath,
+        "--python",
+        script,
+    ]
+
+
+def run_mark_blend(
+    blender_bin: str,
+    script: str,
+    filepath: str,
+    title: str = "",
+    author: str = "",
+    timeout: int = 90,
+) -> bool:
     if not filepath.lower().endswith(".blend") or not os.path.isfile(filepath):
         return False
     if is_indexed(filepath):
         return True
-    blender = getattr(bpy.app, "binary_path", "") or ""
-    if not blender or not os.path.isfile(blender):
+    if not blender_bin or not os.path.isfile(blender_bin) or not os.path.isfile(script):
         return False
-    script = os.path.join(os.path.dirname(__file__), "mark_assets.py")
     env = os.environ.copy()
     env["PAV_TITLE"] = title or ""
     env["PAV_AUTHOR"] = author or ""
     env["PAV_CATALOG_ID"] = CATALOG_UUID
     try:
         result = subprocess.run(
-            [blender, "--background", filepath, "--python", script],
+            mark_blend_command(blender_bin, script, filepath),
             env=env,
-            timeout=180,
+            timeout=timeout,
             capture_output=True,
             check=False,
         )
@@ -154,6 +170,12 @@ def mark_blend_file(filepath: str, title: str = "", author: str = "") -> bool:
         return False
     mark_stamp(filepath)
     return True
+
+
+def mark_blend_file(filepath: str, title: str = "", author: str = "") -> bool:
+    blender = getattr(bpy.app, "binary_path", "") or ""
+    script = os.path.join(os.path.dirname(__file__), "mark_assets.py")
+    return run_mark_blend(blender, script, filepath, title=title, author=author)
 
 
 def index_local_file(filepath: str, title: str = "", author: str = "") -> int:
