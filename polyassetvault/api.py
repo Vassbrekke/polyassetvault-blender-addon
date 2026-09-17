@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.3.3"
+ADDON_VERSION = "0.3.4"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
@@ -264,6 +264,204 @@ def collect_tags(products: Iterable[Mapping[str, Any]]) -> list[str]:
                 seen.add(item)
                 found.append(item)
     return found
+
+
+_NAME_SUFFIX = re.compile(r"\.\d{3}$")
+_NAME_PREFIXES = ("SM_", "SK_", "SKM_", "SKEL_", "GEO_", "MESH_", "MAT_", "CAM_", "LG_", "BP_")
+_TAG_STOP = {
+    "cube", "sphere", "plane", "light", "camera", "empty", "bezier", "nurbs",
+    "circle", "untitled", "asset", "mesh", "object", "scene", "collection",
+    "material", "the", "and", "for", "obj", "blend",
+}
+
+
+def title_from_identifier(name: str) -> str:
+    text = _NAME_SUFFIX.sub("", str(name or ""))
+    upper = text.upper()
+    for prefix in _NAME_PREFIXES:
+        if upper.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    text = re.sub(r"[_-]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return "Untitled asset"
+    return text.title()
+
+
+def name_tokens(*parts: Any) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        for raw in re.split(r"[^a-z0-9]+", str(part or "").lower()):
+            if len(raw) < 3 or raw in _TAG_STOP or raw in seen:
+                continue
+            seen.add(raw)
+            tokens.append(raw)
+    return tokens
+
+
+def infer_category(meta: Mapping[str, Any], names: Iterable[str] = ()) -> str:
+    hay = " ".join(str(n).lower() for n in names)
+    meshes = int(meta.get("mesh_count") or 0)
+    mats = int(meta.get("material_count") or 0)
+    armatures = int(meta.get("armature_count") or 0)
+    if meshes == 0 and meta.get("world_hdri"):
+        return "hdri"
+    if meshes == 0 and mats > 0:
+        return "materials"
+    if meshes == 0 and armatures > 0:
+        return "rigs"
+    if meshes == 0 and meta.get("animated"):
+        return "animations"
+    if meshes == 0 and meta.get("geometry_nodes"):
+        return "geometry-nodes"
+    if meshes > 8 and int(meta.get("light_count") or 0) > 0 and int(meta.get("camera_count") or 0) > 0:
+        return "scenes"
+    if "hdri" in hay or "environment map" in hay:
+        return "hdri"
+    if any(word in hay for word in ("vfx", "particle", "fx")):
+        return "vfx"
+    if "geonode" in hay or "geometry node" in hay:
+        return "geometry-nodes"
+    return "3d-models"
+
+
+def infer_tags(meta: Mapping[str, Any], names: Iterable[str] = ()) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+
+    def add(tag: str) -> None:
+        item = " ".join(str(tag).strip().lower().split())
+        if item and item not in seen and item not in _TAG_STOP:
+            seen.add(item)
+            tags.append(item)
+
+    add("blender")
+    add("3d")
+    for token in name_tokens(*list(names or [])):
+        add(token)
+        if len(tags) >= 10:
+            break
+    if meta.get("rigged"):
+        add("rigged")
+    if meta.get("animated"):
+        add("animated")
+    if meta.get("pbr"):
+        add("pbr")
+    if meta.get("uv_unwrapped"):
+        add("uv-mapped")
+    if meta.get("geometry_nodes"):
+        add("geometry-nodes")
+    if meta.get("shape_keys"):
+        add("shapekeys")
+    if meta.get("hair"):
+        add("hair")
+    if meta.get("lods"):
+        add("lod")
+    if meta.get("procedural"):
+        add("procedural")
+    engine = str(meta.get("render_engine") or "").lower()
+    if "cycle" in engine:
+        add("cycles")
+    if "eevee" in engine:
+        add("eevee")
+    faces = int(meta.get("faces") or 0)
+    if 0 < faces < 5000:
+        add("low-poly")
+    if faces > 200000:
+        add("high-poly")
+    tex = str(meta.get("texture_label") or "")
+    if tex in ("2K", "4K", "8K"):
+        add(tex.lower())
+    if meta.get("rigged") and 0 < faces < 40000:
+        add("game-ready")
+    return tags[:12]
+
+
+def format_polycount(n: int) -> str:
+    count = max(int(n or 0), 0)
+    if count >= 1_000_000:
+        value = f"{count / 1_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"{value}M"
+    if count >= 10_000:
+        value = f"{count / 1000:.1f}".rstrip("0").rstrip(".")
+        return f"{value}k"
+    return str(count)
+
+
+def listing_blurb(meta: Mapping[str, Any], title: str) -> tuple[str, str]:
+    title = (title or "Untitled asset").strip()
+    faces = int(meta.get("faces") or 0)
+    meshes = int(meta.get("mesh_count") or 0)
+    mats = int(meta.get("material_count") or 0)
+    version = str(meta.get("blender_version") or "").strip()
+    bits = []
+    if meshes:
+        bits.append(f"{meshes} mesh{'es' if meshes != 1 else ''}")
+    if faces:
+        bits.append(f"{format_polycount(faces)} polys")
+    if meta.get("rigged"):
+        bits.append("rigged")
+    if meta.get("animated"):
+        bits.append("animated")
+    if version:
+        bits.append(f"Blender {version}")
+    short = f"{title} — {', '.join(bits)}." if bits else f"{title} — Blender asset."
+
+    lines = [title, ""]
+    counts = []
+    if meshes:
+        counts.append(f"{meshes} mesh{'es' if meshes != 1 else ''}")
+    if faces:
+        counts.append(f"{faces} faces")
+    verts = int(meta.get("verts") or 0)
+    if verts:
+        counts.append(f"{verts} verts")
+    if mats:
+        counts.append(f"{mats} material{'s' if mats != 1 else ''}")
+    if counts:
+        lines.append(" · ".join(counts))
+    size = str(meta.get("size_label") or "").strip()
+    if size:
+        lines.append(f"Size ~ {size}")
+    extras = []
+    tex = str(meta.get("texture_label") or "").strip()
+    if tex and tex != "AUTO":
+        extras.append(f"Textures {tex}")
+    if meta.get("uv_unwrapped"):
+        extras.append("UV unwrapped")
+    if meta.get("pbr"):
+        extras.append("PBR (metallic-roughness)")
+    if meta.get("procedural"):
+        extras.append("Procedural materials")
+    if meta.get("geometry_nodes"):
+        extras.append("Geometry Nodes")
+    if meta.get("rigged"):
+        bones = int(meta.get("bone_count") or 0)
+        extras.append(f"Rigged ({bones} bones)" if bones else "Rigged")
+    if meta.get("animated"):
+        actions = int(meta.get("action_count") or 0)
+        frames = str(meta.get("frame_range") or "").strip()
+        extra = "Animated"
+        if actions:
+            extra += f", {actions} action{'s' if actions != 1 else ''}"
+        if frames:
+            extra += f", frames {frames}"
+        extras.append(extra)
+    if meta.get("shape_keys"):
+        extras.append("Shape keys")
+    if meta.get("hair"):
+        extras.append("Hair / curves")
+    if extras:
+        lines.append(" · ".join(extras))
+    engine = str(meta.get("render_engine_label") or "").strip()
+    software = "Blender " + version if version else "Blender"
+    if engine:
+        software += f" · {engine}"
+    lines.append(software)
+    description = "\n".join(line for line in lines if line is not None).strip()
+    return short[:500], description[:10000]
 
 
 def build_listing_fields(

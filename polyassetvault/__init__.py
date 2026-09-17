@@ -1,7 +1,7 @@
 bl_info = {
     "name": "PolyAssetVault",
     "author": "Vassbrekke AS",
-    "version": (0, 3, 3),
+    "version": (0, 3, 4),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar / Header PAV / Asset Shelf / File > Import",
     "description": "Browse, buy, import, and list 3D assets on the PolyAssetVault marketplace",

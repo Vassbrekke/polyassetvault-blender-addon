@@ -302,6 +302,37 @@ class ApiTests(unittest.TestCase):
         fields = api.build_listing_fields(title="X", tags="Blender, BLENDER, PBR")
         self.assertEqual(fields["tags"], "blender, pbr")
 
+    def test_scene_heuristics(self):
+        self.assertEqual(api.title_from_identifier("SM_Old_Hanging_Bar_Lamp.002"), "Old Hanging Bar Lamp")
+        self.assertEqual(api.title_from_identifier("low_poly_tree_pack"), "Low Poly Tree Pack")
+        self.assertEqual(api.format_polycount(12430), "12.4k")
+        self.assertEqual(
+            api.infer_category({"mesh_count": 2, "armature_count": 1, "rigged": True}),
+            "3d-models",
+        )
+        self.assertEqual(
+            api.infer_category({"mesh_count": 0, "armature_count": 1}),
+            "rigs",
+        )
+        self.assertEqual(
+            api.infer_category({"mesh_count": 12, "light_count": 2, "camera_count": 1}),
+            "scenes",
+        )
+        tags = api.infer_tags(
+            {"rigged": True, "pbr": True, "faces": 8000, "uv_unwrapped": True, "render_engine": "CYCLES"},
+            ["hero_character"],
+        )
+        self.assertIn("rigged", tags)
+        self.assertIn("pbr", tags)
+        self.assertIn("hero", tags)
+        short, description = api.listing_blurb(
+            {"mesh_count": 2, "faces": 12430, "blender_version": "5.2.2", "pbr": True},
+            "Lamp",
+        )
+        self.assertIn("Lamp", short)
+        self.assertIn("12.4k", short)
+        self.assertIn("12430 faces", description)
+
     def test_preview_file_helper(self):
         self.assertTrue(api.preview_file("/tmp/cache").endswith("preview.png"))
 

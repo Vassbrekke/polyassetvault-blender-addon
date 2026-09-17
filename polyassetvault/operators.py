@@ -279,6 +279,17 @@ class PAV_PG_product(PropertyGroup):
     thumbnail: StringProperty()
 
 
+def _on_tab_change(self, context):
+    if getattr(self, "tab", "") != "LIST":
+        return
+    try:
+        from .listing import apply_stats, scene_stats
+
+        apply_stats(self, scene_stats(context), overwrite=False)
+    except Exception:
+        pass
+
+
 class PAV_PG_state(PropertyGroup):
     tab: EnumProperty(
         name="Tab",
@@ -289,6 +300,7 @@ class PAV_PG_state(PropertyGroup):
             ("LIST", "List", "Publish a listing from this file"),
         ),
         default="ACCOUNT",
+        update=_on_tab_change,
     )
     search: StringProperty(name="Search", default="")
     category: EnumProperty(name="Category", items=_CATEGORY_FILTER, default="ALL")
@@ -363,6 +375,7 @@ class PAV_PG_state(PropertyGroup):
     listing_engine: StringProperty(name="Target engine", default="Blender")
     listing_video: StringProperty(name="Video preview URL", default="")
     listing_thumb_rev: IntProperty(default=0)
+    listing_hint: StringProperty(default="")
     status_message: StringProperty(name="Status", default="")
     account_name: StringProperty(default="")
     account_type: StringProperty(default="")
@@ -904,7 +917,7 @@ class PAV_OT_list_asset(Operator):
         return ""
 
     def _begin(self, context, modal: bool):
-        from .listing import file_size_label, write_thumbnail
+        from .listing import file_size_label, scene_stats, write_thumbnail
 
         err = self._validate(context)
         if err:
@@ -953,6 +966,20 @@ class PAV_OT_list_asset(Operator):
             return {"CANCELLED"}
 
         version = str(getattr(bpy.app, "version_string", "") or "").strip()
+        stats = {}
+        try:
+            stats = scene_stats(context) or {}
+        except Exception:
+            stats = {}
+        specs = {
+            "polygonCount": int(state.listing_polygon) if str(state.listing_polygon).isdigit() else 0,
+            "fileFormats": ["BLEND"],
+            "software": ["Blender"],
+            "version": version,
+            "compatibility": ["Blender"],
+        }
+        if stats.get("dimensions"):
+            specs["dimensions"] = stats["dimensions"]
         fields = build_listing_fields(
             title=title,
             description=state.listing_description or title,
@@ -976,13 +1003,7 @@ class PAV_OT_list_asset(Operator):
             lods=bool(state.listing_lods),
             target_engine=state.listing_engine,
             video_preview_url=state.listing_video,
-            specifications={
-                "polygonCount": int(state.listing_polygon) if str(state.listing_polygon).isdigit() else 0,
-                "fileFormats": ["BLEND"],
-                "software": ["Blender"],
-                "version": version,
-                "compatibility": ["Blender"],
-            },
+            specifications=specs,
         )
         client = _client(context)
         if not modal:

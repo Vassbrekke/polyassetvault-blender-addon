@@ -187,6 +187,8 @@ class PAV_PT_main(Panel):
 
         meta = layout.box()
         meta.label(text="From the scene")
+        if state.listing_hint:
+            meta.label(text=state.listing_hint, icon="INFO")
         meta.operator("pav.fill_listing", icon="FILE_REFRESH")
         col = meta.column(align=True)
         col.prop(state, "listing_polygon")
