@@ -43,6 +43,30 @@ class AuthServerTests(unittest.TestCase):
             self.assertNotIn("jwt-value", html)
         self.assertEqual(callback.poll(), "jwt-value")
 
+        second = urlencode({"token": "other-jwt", "state": callback.state})
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/callback?{second}", timeout=5)
+            reused = True
+        except urllib.error.HTTPError as exc:
+            reused = False
+            self.assertEqual(exc.code, 409)
+        self.assertFalse(reused)
+        self.assertEqual(callback.poll(), "jwt-value")
+
+    def test_callback_rejects_foreign_host_header(self):
+        callback = auth.LoginCallback(ttl_seconds=30)
+        port = callback.start()
+        self.addCleanup(callback.stop)
+        good = urlencode({"token": "jwt-value", "state": callback.state})
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/callback?{good}",
+            headers={"Host": "evil.example"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(ctx.exception.code, 403)
+        self.assertIsNone(callback.poll())
+
     def test_unknown_path_is_404(self):
         callback = auth.LoginCallback(ttl_seconds=30)
         port = callback.start()

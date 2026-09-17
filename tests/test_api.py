@@ -77,6 +77,11 @@ class FakeAddonAPI(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/addon/products/p1"):
             return self._send(200, {"productId": "p1", "title": "Chair", "owned": True, "price": 12})
+        if self.path.startswith("/redirect-away"):
+            self.send_response(302)
+            self.send_header("Location", "https://evil.example/steal")
+            self.end_headers()
+            return
         if self.path.startswith("/api/addon/products"):
             return self._send(
                 200,
@@ -372,6 +377,71 @@ class ApiTests(unittest.TestCase):
             self.assertIsNone(api.find_cached_asset(tmp))
             self.assertTrue(cache.startswith(tmp))
             self.assertNotIn("..", os.path.relpath(cache, tmp))
+
+    def test_rejects_untrusted_urls_and_ids(self):
+        self.assertIsNone(api.absolute_url("https://polyassetvault.com", "file:///etc/passwd"))
+        self.assertIsNone(api.absolute_url("https://polyassetvault.com", "https://evil.example/x"))
+        self.assertIsNone(api.absolute_url("https://polyassetvault.com", "javascript:alert(1)"))
+        with self.assertRaises(api.AddonAPIError):
+            api.validate_base_url("javascript:alert(1)")
+        with self.assertRaises(api.AddonAPIError):
+            api.validate_base_url("https://user:pass@polyassetvault.com")
+        with self.assertRaises(api.AddonAPIError):
+            api.login_page_url("javascript:alert(1)", 55555, "abc")
+        with self.assertRaises(api.AddonAPIError):
+            api.path_segment("../admin")
+        with self.assertRaises(api.AddonAPIError):
+            api.path_segment("a/b")
+        self.assertEqual(api.path_segment("p1"), "p1")
+        self.assertEqual(api.safe_asset_filename("..", "download.bin"), "download.bin")
+        self.assertEqual(api.safe_asset_filename("../../../etc/passwd", "x.blend"), "x.blend")
+        self.assertEqual(api.safe_asset_filename("chair.blend", "download.bin"), "chair.blend")
+        fields = api.build_listing_fields(title="X", video_preview_url="javascript:https://evil.example")
+        self.assertNotIn("videoPreviewUrl", fields)
+
+    def test_download_to_blocks_foreign_and_file_urls(self):
+        client = api.AddonClient(self.base, token="device-token-abc")
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = str(Path(tmp) / "preview.png")
+            with self.assertRaises(api.AddonAPIError):
+                client.download_to("https://evil.example/thumb.png", dest)
+            with self.assertRaises(api.AddonAPIError):
+                client.download_to("file:///etc/passwd", dest)
+            with self.assertRaises(api.AddonAPIError):
+                client.download_to("http://127.0.0.1:9/thumb.png", dest)
+
+    def test_blocks_cross_origin_redirect(self):
+        client = api.AddonClient(self.base, token="device-token-abc")
+        with self.assertRaises(api.AddonAPIError) as ctx:
+            client.request_json("GET", "/redirect-away")
+        self.assertIn("redirect", str(ctx.exception).lower())
+
+    def test_safe_extract_rejects_zip_slip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "evil.zip"
+            dest = Path(tmp) / "out"
+            dest.mkdir()
+            import zipfile
+
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("../evil.txt", "nope")
+                zf.writestr("ok.blend", "BLEND")
+            with self.assertRaises(api.AddonAPIError):
+                api.safe_extract_zip(str(zip_path), str(dest))
+            self.assertFalse((Path(tmp) / "evil.txt").exists())
+            self.assertFalse((dest / "ok.blend").exists())
+
+    def test_safe_extract_keeps_nested_blend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "ok.zip"
+            dest = Path(tmp) / "out"
+            dest.mkdir()
+            import zipfile
+
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("folder/model.blend", b"BLEND")
+            api.safe_extract_zip(str(zip_path), str(dest))
+            self.assertEqual((dest / "folder" / "model.blend").read_bytes(), b"BLEND")
 
 
 if __name__ == "__main__":

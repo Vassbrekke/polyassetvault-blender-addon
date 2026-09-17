@@ -131,6 +131,7 @@ def mark_blend_command(blender_bin: str, script: str, filepath: str) -> list[str
     return [
         blender_bin,
         "--factory-startup",
+        "--disable-autoexec",
         "--background",
         filepath,
         "--python",

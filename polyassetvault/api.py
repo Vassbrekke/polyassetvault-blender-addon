@@ -8,9 +8,11 @@ import os
 import re
 import secrets
 import ssl
+import stat
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from typing import Any, Iterable, Mapping, Optional
 
 ADDON_VERSION = "0.3.4"
@@ -20,6 +22,15 @@ TRANSFER_TIMEOUT = 300
 LIBRARY_NAME = "PolyAssetVault"
 CATALOG_UUID = "7c2e9a10-4f3b-4c8d-9e21-00c0ffee0001"
 PREVIEW_FILENAME = "preview.png"
+MAX_JSON_BYTES = 8 * 1024 * 1024
+MAX_ERROR_BYTES = 64 * 1024
+MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
+MAX_PREVIEW_BYTES = 20 * 1024 * 1024
+MAX_ZIP_FILES = 4096
+MAX_ZIP_UNCOMPRESSED = 2 * 1024 * 1024 * 1024
+MAX_PRODUCT_ID_LEN = 128
+ASSET_SUFFIXES = (".blend", ".zip")
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def catalog_definition_text(uuid: str = CATALOG_UUID, name: str = LIBRARY_NAME) -> str:
@@ -551,8 +562,14 @@ def build_listing_fields(
     if target_engine:
         fields["targetEngine"] = str(target_engine)[:200]
     url = (video_preview_url or "").strip()
-    if url.startswith("http://") or url.startswith("https://"):
-        fields["videoPreviewUrl"] = url
+    parsed_video = urllib.parse.urlparse(url)
+    if (
+        parsed_video.scheme in ("http", "https")
+        and parsed_video.netloc
+        and not parsed_video.username
+        and not parsed_video.password
+    ):
+        fields["videoPreviewUrl"] = url[:2000]
     return fields
 
 
@@ -567,6 +584,249 @@ class AddonAPIError(Exception):
         return f"HTTP {self.status}: {self.message}"
 
 
+def _url_port(parsed: urllib.parse.ParseResult) -> int:
+    if parsed.port is not None:
+        return parsed.port
+    return 443 if parsed.scheme == "https" else 80
+
+
+def validate_base_url(url: str) -> str:
+    text = (url or "").strip()
+    parsed = urllib.parse.urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise AddonAPIError(0, "URL must be http(s) with a host")
+    if parsed.username or parsed.password:
+        raise AddonAPIError(0, "URL must not contain credentials")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        raise AddonAPIError(0, "URL must be http(s) with a host")
+    if parsed.scheme == "http" and host not in LOOPBACK_HOSTS:
+        raise AddonAPIError(0, "HTTP is only allowed for localhost")
+    return text.rstrip("/")
+
+
+def is_browser_url(url: str) -> bool:
+    try:
+        validate_base_url(url)
+        return True
+    except AddonAPIError:
+        return False
+
+
+def url_is_allowed(url: str, allowed_bases: Iterable[str]) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    for base in allowed_bases:
+        try:
+            allowed = urllib.parse.urlparse(validate_base_url(base))
+        except AddonAPIError:
+            continue
+        allowed_host = (allowed.hostname or "").lower().rstrip(".")
+        if (
+            host == allowed_host
+            and parsed.scheme == allowed.scheme
+            and _url_port(parsed) == _url_port(allowed)
+        ):
+            return True
+    return False
+
+
+def same_http_origin(url_a: str, url_b: str) -> bool:
+    a = urllib.parse.urlparse(url_a)
+    b = urllib.parse.urlparse(url_b)
+    if a.scheme not in ("http", "https") or b.scheme not in ("http", "https"):
+        return False
+    if a.scheme == "https" and b.scheme != "https":
+        return False
+    host_a = (a.hostname or "").lower().rstrip(".")
+    host_b = (b.hostname or "").lower().rstrip(".")
+    return bool(host_a) and host_a == host_b and _url_port(a) == _url_port(b)
+
+
+class SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        current = req.get_full_url()
+        resolved = urllib.parse.urljoin(current, newurl.replace(" ", "%20"))
+        if not same_http_origin(current, resolved):
+            raise urllib.error.URLError("blocked cross-origin redirect")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def path_segment(value: str) -> str:
+    text = str(value or "")
+    if not text or len(text) > MAX_PRODUCT_ID_LEN:
+        raise AddonAPIError(0, "Invalid product id")
+    if "/" in text or "\\" in text or "\x00" in text or text in (".", ".."):
+        raise AddonAPIError(0, "Invalid product id")
+    return urllib.parse.quote(text, safe="-_.~")
+
+
+def path_within(directory: str, filename: str) -> Optional[str]:
+    directory = os.path.abspath(directory)
+    target = os.path.abspath(os.path.join(directory, filename))
+    try:
+        common = os.path.commonpath([directory, target])
+    except ValueError:
+        return None
+    if common != directory:
+        return None
+    return target
+
+
+def safe_basename(name: str, fallback: str = "download") -> str:
+    raw = urllib.parse.unquote(str(name or "")).replace("\\", "/")
+    base = os.path.basename(raw).replace("\x00", "").strip()
+    if os.altsep:
+        base = base.replace(os.altsep, "")
+    if base in ("", ".", "..") or os.sep in base or "\n" in base or "\r" in base:
+        return fallback
+    return base
+
+
+def safe_asset_filename(name: str, fallback: str = "download.bin") -> str:
+    base = safe_basename(name, "")
+    lower = base.lower()
+    if base and lower.endswith(ASSET_SUFFIXES):
+        return base
+    fb = safe_basename(fallback, "")
+    if fb and fb.lower().endswith(ASSET_SUFFIXES):
+        return fb
+    return "download.bin"
+
+
+def zip_member_relpath(name: str) -> Optional[str]:
+    text = (name or "").replace("\\", "/")
+    if not text or text.startswith("/") or re.match(r"^[a-zA-Z]:", text):
+        return None
+    parts: list[str] = []
+    for part in text.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            return None
+        parts.append(part)
+    if not parts:
+        return None
+    return os.path.join(*parts)
+
+
+def safe_extract_zip(
+    zip_path: str,
+    dest_dir: str,
+    *,
+    max_files: int = MAX_ZIP_FILES,
+    max_uncompressed: int = MAX_ZIP_UNCOMPRESSED,
+) -> str:
+    dest_dir = os.path.abspath(dest_dir)
+    os.makedirs(dest_dir, exist_ok=True)
+    written = 0
+    with zipfile.ZipFile(zip_path) as archive:
+        infos = archive.infolist()
+        if len(infos) > max_files:
+            raise AddonAPIError(0, "Archive has too many files")
+        for info in infos:
+            mode = info.external_attr >> 16
+            if mode and stat.S_ISLNK(mode):
+                raise AddonAPIError(0, "Archive contains a symbolic link")
+            rel = zip_member_relpath(info.filename)
+            if rel is None:
+                raise AddonAPIError(0, "Archive contains an unsafe path")
+            target = path_within(dest_dir, rel)
+            if target is None:
+                raise AddonAPIError(0, "Archive contains an unsafe path")
+            if info.is_dir() or info.filename.endswith("/"):
+                os.makedirs(target, exist_ok=True)
+                continue
+            parent = os.path.dirname(target)
+            os.makedirs(parent, exist_ok=True)
+            if os.path.lexists(target):
+                if os.path.islink(target) or os.path.isdir(target):
+                    raise AddonAPIError(0, "Archive would overwrite a link or directory")
+                os.remove(target)
+            with archive.open(info, "r") as src, open(target, "wb") as out:
+                while True:
+                    chunk = src.read(1024 * 256)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_uncompressed:
+                        raise AddonAPIError(0, "Archive is too large")
+                    out.write(chunk)
+    return dest_dir
+
+
+def _read_limited(handle, limit: int, what: str) -> bytes:
+    data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise AddonAPIError(0, f"{what} too large")
+    return data
+
+
+def _copy_limited(src, dest, limit: int) -> int:
+    total = 0
+    while True:
+        chunk = src.read(1024 * 256)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise AddonAPIError(0, "Download exceeds size limit")
+        dest.write(chunk)
+    return total
+
+
+def _multipart_token(value: str) -> str:
+    return str(value).replace("\r", "").replace("\n", "").replace('"', "")
+
+
+def looks_like_image(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            prefix = handle.read(16)
+    except OSError:
+        return False
+    if prefix.startswith(PNG_MAGIC) or prefix.startswith(b"\xff\xd8\xff"):
+        return True
+    if prefix.startswith((b"GIF87a", b"GIF89a")):
+        return True
+    return len(prefix) >= 12 and prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP"
+
+
+def _open_replace_file(path: str):
+    if os.path.lexists(path) and (os.path.islink(path) or os.path.isdir(path)):
+        raise AddonAPIError(0, "Refusing to overwrite a link or directory")
+    return open(path, "wb")
+
+
+def _unlink_quiet(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _safe_opener() -> urllib.request.OpenerDirector:
+    opener = urllib.request.OpenerDirector()
+    context = ssl.create_default_context()
+    for handler in (
+        urllib.request.ProxyHandler(),
+        urllib.request.UnknownHandler(),
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        SameOriginRedirectHandler(),
+        urllib.request.HTTPSHandler(context=context),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
 def join_url(base: str, path: str) -> str:
     base = (base or "").rstrip("/")
     if not path.startswith("/"):
@@ -577,9 +837,18 @@ def join_url(base: str, path: str) -> str:
 def absolute_url(base: str, maybe_relative: Optional[str]) -> Optional[str]:
     if not maybe_relative:
         return None
-    if maybe_relative.startswith("http://") or maybe_relative.startswith("https://"):
-        return maybe_relative
-    return join_url(base, maybe_relative)
+    text = maybe_relative.strip()
+    parsed = urllib.parse.urlparse(text)
+    if parsed.scheme:
+        try:
+            allowed = [validate_base_url(base)]
+        except AddonAPIError:
+            return None
+        if not url_is_allowed(text, allowed):
+            return None
+        return text
+    path = text if text.startswith("/") else "/" + text
+    return join_url(base, path)
 
 
 def encode_multipart(
@@ -593,19 +862,20 @@ def encode_multipart(
     boundary = "----PavBoundary" + secrets.token_hex(16)
     chunks: list[bytes] = []
     for key, value in fields.items():
+        field = _multipart_token(key)
         chunks.append(f"--{boundary}\r\n".encode("utf-8"))
         chunks.append(
-            f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8")
+            f'Content-Disposition: form-data; name="{field}"\r\n\r\n'.encode("utf-8")
         )
         chunks.append(str(value).encode("utf-8"))
         chunks.append(b"\r\n")
     for field_name, filename, content, content_type in files:
-        safe_name = os.path.basename(filename).replace('"', "")
-        ctype = content_type or "application/octet-stream"
+        safe_name = _multipart_token(safe_basename(filename, "upload.bin"))
+        ctype = _multipart_token(content_type or "application/octet-stream")
         chunks.append(f"--{boundary}\r\n".encode("utf-8"))
         chunks.append(
             (
-                f'Content-Disposition: form-data; name="{field_name}"; '
+                f'Content-Disposition: form-data; name="{_multipart_token(field_name)}"; '
                 f'filename="{safe_name}"\r\n'
                 f"Content-Type: {ctype}\r\n\r\n"
             ).encode("utf-8")
@@ -633,14 +903,13 @@ def file_content_type(filename: str) -> str:
 
 def _filename_from_disposition(header: Optional[str], fallback: str) -> str:
     if not header:
-        return fallback
+        return safe_asset_filename(fallback, "download.bin")
     match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', header, re.I)
     if not match:
         match = re.search(r'filename="([^"]+)"', header, re.I)
     if match:
-        name = os.path.basename(urllib.parse.unquote(match.group(1).strip()))
-        return name or fallback
-    return fallback
+        return safe_asset_filename(match.group(1).strip(), fallback)
+    return safe_asset_filename(fallback, "download.bin")
 
 
 class AddonClient:
@@ -650,45 +919,72 @@ class AddonClient:
         token: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
         opener: Optional[urllib.request.OpenerDirector] = None,
+        site_url: Optional[str] = None,
     ):
-        self.api_base = (api_base or "").rstrip("/")
+        self.api_base = validate_base_url(api_base)
         self.token = token or ""
         self.timeout = timeout
-        self._opener = opener or urllib.request.build_opener(
-            urllib.request.HTTPSHandler(context=ssl.create_default_context())
-        )
+        self._allowed_bases = [self.api_base]
+        if site_url:
+            try:
+                self._allowed_bases.append(validate_base_url(site_url))
+            except AddonAPIError:
+                pass
+        self._opener = opener or _safe_opener()
 
-    def _headers(self, extra: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    def _assert_url(self, url: str) -> None:
+        if not url_is_allowed(url, self._allowed_bases):
+            raise AddonAPIError(0, "Blocked request to an untrusted URL")
+
+    def _headers(
+        self,
+        extra: Optional[Mapping[str, str]] = None,
+        *,
+        url: str = "",
+        send_auth: bool = True,
+    ) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
             "User-Agent": USER_AGENT,
         }
-        if self.token:
+        if send_auth and self.token and (not url or same_http_origin(url, self.api_base)):
             headers["X-Addon-Token"] = self.token
         if extra:
             headers.update(extra)
         return headers
 
     def _open(self, req: urllib.request.Request, timeout: Optional[int] = None):
+        self._assert_url(req.get_full_url())
         try:
             return self._opener.open(req, timeout=timeout if timeout is not None else self.timeout)
         except urllib.error.HTTPError as exc:
             payload = None
             message = exc.reason or "Request failed"
             try:
-                raw = exc.read()
+                raw = exc.read(MAX_ERROR_BYTES)
                 if raw:
                     payload = json.loads(raw.decode("utf-8"))
-                    message = (
-                        payload.get("message")
-                        or payload.get("error")
-                        or message
-                    )
+                    if isinstance(payload, dict):
+                        message = (
+                            payload.get("message")
+                            or payload.get("error")
+                            or message
+                        )
+                    else:
+                        payload = None
             except Exception:
                 payload = None
             raise AddonAPIError(exc.code, str(message), payload) from exc
         except urllib.error.URLError as exc:
             raise AddonAPIError(0, f"Network error: {exc.reason}") from exc
+
+    def _load_json(self, raw: bytes) -> Any:
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AddonAPIError(0, "Invalid JSON response") from exc
 
     def request_json(
         self,
@@ -712,17 +1008,17 @@ class AddonClient:
             extra["Content-Type"] = "application/json"
         if bearer:
             extra["Authorization"] = f"Bearer {bearer}"
+        if not path.startswith("/") or path.startswith("//"):
+            raise AddonAPIError(0, "Invalid API path")
         req = urllib.request.Request(
             url,
             data=data,
-            headers=self._headers(extra),
+            headers=self._headers(extra, url=url),
             method=method.upper(),
         )
         with self._open(req, timeout=timeout) as resp:
-            raw = resp.read()
-            if not raw:
-                return {}
-            return json.loads(raw.decode("utf-8"))
+            raw = _read_limited(resp, MAX_JSON_BYTES, "Response")
+            return self._load_json(raw)
 
     def request_multipart(
         self,
@@ -732,59 +1028,75 @@ class AddonClient:
         files: Iterable[tuple[str, str, bytes, str]],
         timeout: int = TRANSFER_TIMEOUT,
     ) -> Any:
+        if not path.startswith("/") or path.startswith("//"):
+            raise AddonAPIError(0, "Invalid API path")
         body, content_type = encode_multipart(fields, files)
         url = join_url(self.api_base, path)
         req = urllib.request.Request(
             url,
             data=body,
-            headers=self._headers({"Content-Type": content_type}),
+            headers=self._headers({"Content-Type": content_type}, url=url),
             method=method.upper(),
         )
         with self._open(req, timeout=timeout) as resp:
             status = getattr(resp, "status", 200)
-            raw = resp.read()
+            raw = _read_limited(resp, MAX_JSON_BYTES, "Response")
             if not raw:
                 return {"_http_status": status}
-            payload = json.loads(raw.decode("utf-8"))
+            payload = self._load_json(raw)
             if isinstance(payload, dict):
                 payload["_http_status"] = status
             return payload
 
     def download_file(self, path: str, dest_path: str, timeout: int = TRANSFER_TIMEOUT) -> str:
+        if not path.startswith("/") or path.startswith("//"):
+            raise AddonAPIError(0, "Invalid API path")
         url = join_url(self.api_base, path)
-        req = urllib.request.Request(url, headers=self._headers(), method="GET")
-        os.makedirs(os.path.dirname(os.path.abspath(dest_path)) or ".", exist_ok=True)
-        with self._open(req, timeout=timeout) as resp:
-            filename = _filename_from_disposition(
-                resp.headers.get("Content-Disposition"),
-                os.path.basename(dest_path) or "download",
-            )
-            directory = os.path.dirname(os.path.abspath(dest_path))
-            final_path = os.path.join(directory, filename)
-            with open(final_path, "wb") as handle:
-                while True:
-                    chunk = resp.read(1024 * 256)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
+        req = urllib.request.Request(url, headers=self._headers(url=url), method="GET")
+        directory = os.path.dirname(os.path.abspath(dest_path)) or "."
+        os.makedirs(directory, exist_ok=True)
+        final_path = None
+        try:
+            with self._open(req, timeout=timeout) as resp:
+                filename = _filename_from_disposition(
+                    resp.headers.get("Content-Disposition"),
+                    os.path.basename(dest_path) or "download.bin",
+                )
+                final_path = path_within(directory, filename)
+                if final_path is None:
+                    raise AddonAPIError(0, "Invalid download filename")
+                with _open_replace_file(final_path) as handle:
+                    _copy_limited(resp, handle, MAX_DOWNLOAD_BYTES)
+        except Exception:
+            if final_path:
+                _unlink_quiet(final_path)
+            raise
         return final_path
 
     def download_to(self, url_or_path: str, dest_path: str, timeout: int = DEFAULT_TIMEOUT) -> str:
-        url = url_or_path or ""
+        url = (url_or_path or "").strip()
         if url.startswith("/"):
             url = join_url(self.api_base, url)
         if not url:
             raise AddonAPIError(0, "No download URL")
-        req = urllib.request.Request(url, headers=self._headers(), method="GET")
-        directory = os.path.dirname(os.path.abspath(dest_path)) or "."
+        self._assert_url(url)
+        dest_path = os.path.abspath(dest_path)
+        directory = os.path.dirname(dest_path) or "."
         os.makedirs(directory, exist_ok=True)
-        with self._open(req, timeout=timeout) as resp:
-            with open(dest_path, "wb") as handle:
-                while True:
-                    chunk = resp.read(1024 * 256)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
+        if path_within(directory, os.path.basename(dest_path)) != dest_path:
+            raise AddonAPIError(0, "Invalid download path")
+        req = urllib.request.Request(
+            url, headers=self._headers(url=url, send_auth=False), method="GET"
+        )
+        try:
+            with self._open(req, timeout=timeout) as resp:
+                with _open_replace_file(dest_path) as handle:
+                    _copy_limited(resp, handle, MAX_PREVIEW_BYTES)
+            if not looks_like_image(dest_path):
+                raise AddonAPIError(0, "Preview was not a valid image")
+        except Exception:
+            _unlink_quiet(dest_path)
+            raise
         return dest_path
 
     # ── Auth ────────────────────────────────────────────────────────────────
@@ -833,7 +1145,7 @@ class AddonClient:
         )
 
     def product(self, product_id: str) -> dict:
-        return self.request_json("GET", f"/api/addon/products/{product_id}")
+        return self.request_json("GET", f"/api/addon/products/{path_segment(product_id)}")
 
     def purchases(self) -> dict:
         return self.request_json("GET", "/api/addon/purchases")
@@ -846,7 +1158,9 @@ class AddonClient:
         )
 
     def download_product(self, product_id: str, dest_path: str) -> str:
-        return self.download_file(f"/api/addon/products/{product_id}/download", dest_path)
+        return self.download_file(
+            f"/api/addon/products/{path_segment(product_id)}/download", dest_path
+        )
 
     def create_product(
         self,
@@ -857,6 +1171,12 @@ class AddonClient:
         for path in file_paths:
             name = os.path.basename(path)
             ctype = file_content_type(name)
+            try:
+                size = os.path.getsize(path)
+            except OSError as exc:
+                raise AddonAPIError(0, "Could not read upload") from exc
+            if size > MAX_DOWNLOAD_BYTES:
+                raise AddonAPIError(0, "File too large to upload")
             with open(path, "rb") as handle:
                 files.append(("files", name, handle.read(), ctype))
         return self.request_multipart("POST", "/api/addon/products", fields, files)
@@ -874,7 +1194,7 @@ class AddonClient:
             with open(path, "rb") as handle:
                 files.append(("files", name, handle.read(), ctype))
         return self.request_multipart(
-            "PUT", f"/api/addon/products/{product_id}", fields, files
+            "PUT", f"/api/addon/products/{path_segment(product_id)}", fields, files
         )
 
 
@@ -918,9 +1238,14 @@ def find_cached_asset(cache_dir: str) -> Optional[str]:
 
 
 def product_page_url(site_url: str, product_id: str) -> str:
-    return join_url(site_url, f"/product/{product_id}")
+    return join_url(validate_base_url(site_url), f"/product/{path_segment(product_id)}")
 
 
 def login_page_url(site_url: str, port: int, state: str) -> str:
-    query = urllib.parse.urlencode({"port": port, "state": state})
-    return join_url(site_url, f"/addon-login?{query}")
+    if not isinstance(port, int) or not (49152 <= port <= 65535):
+        raise AddonAPIError(0, "Invalid callback port")
+    text = str(state or "")
+    if not text or len(text) > 128:
+        raise AddonAPIError(0, "Invalid login state")
+    query = urllib.parse.urlencode({"port": port, "state": text})
+    return join_url(validate_base_url(site_url), f"/addon-login?{query}")

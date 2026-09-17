@@ -6,6 +6,7 @@ on a port in 49152–65535. This module is stdlib-only (no bpy).
 
 from __future__ import annotations
 
+import html
 import secrets
 import socket
 import threading
@@ -16,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 PORT_MIN = 49152
 PORT_MAX = 65535
 DEFAULT_TTL_SECONDS = 180
+MAX_TOKEN_LEN = 16384
 
 
 class LoginCallback:
@@ -85,23 +87,40 @@ class LoginCallback:
                 if parsed.path != "/callback":
                     self.send_error(404, "Not found")
                     return
+                host_header = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+                if host_header not in ("127.0.0.1", "localhost"):
+                    self.send_error(403, "Forbidden")
+                    return
                 host = self.client_address[0]
                 if host not in ("127.0.0.1", "::1"):
                     self.send_error(403, "Forbidden")
                     return
-                params = parse_qs(parsed.query)
+                params = parse_qs(parsed.query, keep_blank_values=False)
                 state = (params.get("state") or [""])[0]
                 token = (params.get("token") or [""])[0]
-                if not state or state != callback.state:
+                expected = callback.state.encode("utf-8")
+                given = state.encode("utf-8")
+                if (
+                    not state
+                    or len(given) != len(expected)
+                    or not secrets.compare_digest(given, expected)
+                ):
                     callback.error = "State mismatch"
                     self._html(400, "Login failed", "State mismatch. Return to Blender and try again.")
                     return
-                if not token:
+                if not token or len(token) > MAX_TOKEN_LEN or any(ch.isspace() for ch in token):
                     callback.error = "Missing token"
                     self._html(400, "Login failed", "No token was returned.")
                     return
                 with callback._lock:
-                    callback.token = token
+                    if callback.token is not None:
+                        already = True
+                    else:
+                        callback.token = token
+                        already = False
+                if already:
+                    self._html(409, "Already used", "This sign-in was already completed.")
+                    return
                 self._html(
                     200,
                     "Signed in",
@@ -109,6 +128,8 @@ class LoginCallback:
                 )
 
             def _html(self, code: int, title: str, body: str) -> None:
+                title = html.escape(title, quote=True)
+                body = html.escape(body, quote=True)
                 page = (
                     "<!DOCTYPE html><html><head><meta charset='utf-8'>"
                     f"<title>{title}</title></head><body>"
@@ -118,6 +139,9 @@ class LoginCallback:
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(page)))
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy", "default-src 'none'")
+                self.send_header("Referrer-Policy", "no-referrer")
                 self.end_headers()
                 self.wfile.write(page)
 

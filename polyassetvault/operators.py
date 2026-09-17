@@ -7,7 +7,6 @@ import sys
 import tempfile
 import threading
 import webbrowser
-import zipfile
 
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
@@ -35,7 +34,9 @@ from .api import (
     pbr_workflow_api,
     product_cache_dir,
     product_page_url,
+    safe_extract_zip,
     texture_resolution_api,
+    validate_base_url,
 )
 from .auth import LoginCallback
 from .prefs import get_prefs
@@ -46,7 +47,7 @@ _CATEGORY_FILTER = (("ALL", "All categories", ""),) + _CATEGORY_ITEMS
 
 def _client(context) -> AddonClient:
     prefs = get_prefs(context)
-    return AddonClient(prefs.api_base_url, token=prefs.get_token())
+    return AddonClient(prefs.api_base_url, token=prefs.get_token(), site_url=prefs.site_url)
 
 
 def _report_api(operator, exc: AddonAPIError):
@@ -139,8 +140,7 @@ def _import_downloaded_objects(filepath: str, link: bool = False) -> tuple[str, 
     if lower.endswith(".zip"):
         extract_dir = filepath + "_extracted"
         os.makedirs(extract_dir, exist_ok=True)
-        with zipfile.ZipFile(filepath) as archive:
-            archive.extractall(extract_dir)
+        safe_extract_zip(filepath, extract_dir)
         blends = []
         for root, _dirs, files in os.walk(extract_dir):
             for name in files:
@@ -429,8 +429,11 @@ class PAV_OT_login(Operator):
 
     def invoke(self, context, event):
         prefs = get_prefs(context)
-        if not prefs.site_url or not prefs.api_base_url:
-            self.report({"ERROR"}, "Set Site URL and API base URL in addon preferences.")
+        try:
+            validate_base_url(prefs.site_url)
+            validate_base_url(prefs.api_base_url)
+        except AddonAPIError:
+            self.report({"ERROR"}, "Site URL and API base URL must be http(s) with a host.")
             return {"CANCELLED"}
         callback = LoginCallback()
         try:
@@ -438,7 +441,12 @@ class PAV_OT_login(Operator):
         except Exception as exc:
             self.report({"ERROR"}, f"Could not start login listener: {exc}")
             return {"CANCELLED"}
-        url = login_page_url(prefs.site_url, port, callback.state)
+        try:
+            url = login_page_url(prefs.site_url, port, callback.state)
+        except AddonAPIError as exc:
+            callback.stop()
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         webbrowser.open(url)
         self._callback = callback
         wm = context.window_manager
@@ -475,8 +483,8 @@ class PAV_OT_login(Operator):
 
     def _exchange(self, context, jwt: str):
         prefs = get_prefs(context)
-        client = AddonClient(prefs.api_base_url)
         try:
+            client = AddonClient(prefs.api_base_url, site_url=prefs.site_url)
             payload = client.issue_device_token(
                 jwt,
                 device_name=f"Blender {bpy.app.version_string}",
@@ -632,7 +640,11 @@ class PAV_OT_buy(Operator):
         if item is None or not item.product_id:
             self.report({"ERROR"}, "Select a product first.")
             return {"CANCELLED"}
-        url = product_page_url(get_prefs(context).site_url, item.product_id)
+        try:
+            url = product_page_url(get_prefs(context).site_url, item.product_id)
+        except AddonAPIError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         webbrowser.open(url)
         wm.pav.status_message = "Checkout opened in the browser. Refresh Library after paying."
         self.report({"INFO"}, "Finish payment in the browser, then refresh Library.")
@@ -649,7 +661,12 @@ class PAV_OT_open_listing(Operator):
         if item is None or not item.product_id:
             self.report({"ERROR"}, "Select a listing first.")
             return {"CANCELLED"}
-        webbrowser.open(product_page_url(get_prefs(context).site_url, item.product_id))
+        try:
+            url = product_page_url(get_prefs(context).site_url, item.product_id)
+        except AddonAPIError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        webbrowser.open(url)
         return {"FINISHED"}
 
 
@@ -817,12 +834,28 @@ class PAV_OT_drop_files(Operator):
         imported = []
         names = []
         for entry in self.files:
-            path = os.path.join(self.directory, entry.name)
+            name = os.path.basename(getattr(entry, "name", "") or "")
+            if not name or name in (".", ".."):
+                continue
+            lower = name.lower()
+            if not lower.endswith((".blend", ".zip")):
+                continue
+            directory = os.path.abspath(self.directory)
+            path = os.path.abspath(os.path.join(directory, name))
+            try:
+                if os.path.commonpath([directory, path]) != directory:
+                    continue
+            except ValueError:
+                continue
             if not os.path.isfile(path):
                 continue
-            _message, objects = _import_downloaded_objects(path)
+            try:
+                _message, objects = _import_downloaded_objects(path)
+            except Exception as exc:
+                self.report({"ERROR"}, f"Could not import {name}: {exc}")
+                continue
             imported.extend(objects)
-            names.append(entry.name)
+            names.append(name)
         if not names:
             self.report({"ERROR"}, "No .blend or .zip to import.")
             return {"CANCELLED"}
