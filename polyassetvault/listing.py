@@ -188,6 +188,51 @@ def _view3d_override(context):
     }
 
 
+def _capture_view_hd(context) -> None:
+    """Match the 3D View camera, then OpenGL at scene render resolution (not viewport pixels)."""
+    scene = context.scene
+    view_layer = context.view_layer
+    override = _view3d_override(context)
+    old_camera = scene.camera
+    old_active = view_layer.objects.active
+    old_selected = list(context.selected_objects or [])
+    cam_data = bpy.data.cameras.new("PAV_ThumbCam")
+    cam_obj = bpy.data.objects.new("PAV_ThumbCam", cam_data)
+    scene.collection.objects.link(cam_obj)
+    try:
+        scene.camera = cam_obj
+        if override:
+            with context.temp_override(**override):
+                for obj in list(context.selected_objects or []):
+                    obj.select_set(False)
+                cam_obj.select_set(True)
+                view_layer.objects.active = cam_obj
+                bpy.ops.view3d.camera_to_view()
+                bpy.ops.render.opengl(write_still=True, view_context=False)
+        else:
+            bpy.ops.render.opengl(write_still=True, view_context=False)
+    finally:
+        scene.camera = old_camera
+        try:
+            bpy.data.objects.remove(cam_obj, do_unlink=True)
+        except Exception:
+            pass
+        try:
+            if cam_data.users == 0:
+                bpy.data.cameras.remove(cam_data)
+        except Exception:
+            pass
+        for obj in old_selected:
+            try:
+                obj.select_set(True)
+            except Exception:
+                pass
+        try:
+            view_layer.objects.active = old_active
+        except Exception:
+            pass
+
+
 def _save_render_result(path: str) -> bool:
     image = bpy.data.images.get("Render Result")
     if image is None:
@@ -259,18 +304,21 @@ def write_thumbnail(context, dest: str, source: str = "VIEWPORT", custom: str = 
             except Exception:
                 pass
         else:
-            override = _view3d_override(context)
             try:
-                if override:
-                    with context.temp_override(**override):
-                        bpy.ops.render.opengl(write_still=True, view_context=True)
-                else:
-                    bpy.ops.render.opengl(write_still=True, view_context=True)
+                _capture_view_hd(context)
             except Exception:
+                override = _view3d_override(context)
                 try:
-                    bpy.ops.render.opengl(write_still=True)
+                    if override:
+                        with context.temp_override(**override):
+                            bpy.ops.render.opengl(write_still=True, view_context=True)
+                    else:
+                        bpy.ops.render.opengl(write_still=True, view_context=True)
                 except Exception:
-                    pass
+                    try:
+                        bpy.ops.render.opengl(write_still=True)
+                    except Exception:
+                        pass
         if _save_render_result(dest):
             return dest
         found = _resolve_written_png(dest)

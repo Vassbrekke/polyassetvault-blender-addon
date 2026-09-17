@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.3.2"
+ADDON_VERSION = "0.3.3"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
@@ -169,6 +169,103 @@ def format_file_size(nbytes: int) -> str:
     return f"{size} Bytes"
 
 
+SEED_TAGS = (
+    "blender",
+    "3d",
+    "pbr",
+    "rigged",
+    "animated",
+    "low-poly",
+    "game-ready",
+    "stylized",
+    "realistic",
+    "character",
+    "environment",
+    "prop",
+    "vehicle",
+    "architecture",
+    "nature",
+    "sci-fi",
+    "interior",
+)
+
+
+def split_tags(text: str) -> list[str]:
+    parts: list[str] = []
+    for raw in (text or "").split(","):
+        tag = " ".join(raw.strip().lower().split())
+        if tag and tag not in parts:
+            parts.append(tag)
+    return parts
+
+
+def normalize_tags(text: str, known: Iterable[str] = ()) -> str:
+    lookup = {}
+    for item in list(SEED_TAGS) + list(known or []):
+        key = " ".join(str(item).strip().lower().split())
+        if key:
+            lookup[key] = key
+    out: list[str] = []
+    for tag in split_tags(text):
+        canon = lookup.get(tag, tag)
+        if canon not in out:
+            out.append(canon)
+    return ", ".join(out)
+
+
+def suggest_tags(text: str, known: Iterable[str] = (), limit: int = 8) -> list[str]:
+    used = set(split_tags(text))
+    raw = text or ""
+    prefix = "" if raw.endswith(",") else raw.split(",")[-1].strip().lower()
+    catalog: list[str] = []
+    seen: set[str] = set()
+    for item in list(SEED_TAGS) + list(known or []):
+        tag = " ".join(str(item).strip().lower().split())
+        if tag and tag not in seen:
+            catalog.append(tag)
+            seen.add(tag)
+    matches: list[str] = []
+    for tag in catalog:
+        if tag in used:
+            continue
+        if prefix and not (tag.startswith(prefix) or prefix in tag):
+            continue
+        matches.append(tag)
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+def apply_suggested_tag(current: str, suggestion: str, known: Iterable[str] = ()) -> str:
+    suggestion = " ".join((suggestion or "").strip().lower().split())
+    if not suggestion:
+        return normalize_tags(current, known)
+    raw = current or ""
+    if not raw.strip() or raw.endswith(",") or raw.endswith(", "):
+        return normalize_tags(raw + " " + suggestion, known)
+    parts = raw.split(",")
+    last = parts[-1].strip().lower()
+    if last and suggestion.startswith(last):
+        parts[-1] = " " + suggestion
+        return normalize_tags(",".join(parts), known)
+    return normalize_tags(raw + ", " + suggestion, known)
+
+
+def collect_tags(products: Iterable[Mapping[str, Any]]) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for product in products or []:
+        tags = product.get("tags") or []
+        if isinstance(tags, str):
+            tags = split_tags(tags)
+        for tag in tags:
+            item = " ".join(str(tag).strip().lower().split())
+            if item and item not in seen:
+                seen.add(item)
+                found.append(item)
+    return found
+
+
 def build_listing_fields(
     *,
     title: str,
@@ -229,7 +326,7 @@ def build_listing_fields(
         "price": f"{parsed_price:g}",
         "currency": currency,
         "category": category,
-        "tags": tags or "blender",
+        "tags": normalize_tags(tags or "blender"),
         "status": status,
         "fileFormat": (file_format or "BLEND")[:200],
         "rigged": "true" if rigged else "false",

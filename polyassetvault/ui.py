@@ -26,7 +26,7 @@ class PAV_PT_main(Panel):
             layout.label(text=state.status_message, icon="INFO")
 
         if state.tab == "ACCOUNT":
-            self._draw_account(layout, state, signed_in)
+            self._draw_account(layout, context, state, signed_in)
         elif state.tab == "BROWSE":
             self._draw_browse(layout, context, signed_in)
         elif state.tab == "LIBRARY":
@@ -34,7 +34,7 @@ class PAV_PT_main(Panel):
         else:
             self._draw_list(layout, context, signed_in)
 
-    def _draw_account(self, layout, state, signed_in):
+    def _draw_account(self, layout, context, state, signed_in):
         box = layout.box()
         if signed_in:
             box.label(text=state.account_name or "Signed in", icon="USER")
@@ -49,7 +49,10 @@ class PAV_PT_main(Panel):
         else:
             box.label(text="Not signed in")
             box.operator("pav.login", icon="URL", text="Sign in with browser")
-        layout.operator("pav.open_prefs", icon="PREFERENCES", text="API / download folder")
+        layout.prop(get_prefs(context), "download_dir")
+        row = layout.row(align=True)
+        row.operator("pav.save_prefs", icon="FILE_TICK")
+        row.operator("pav.open_prefs", icon="PREFERENCES", text="All settings")
 
     def _draw_browse(self, layout, context, signed_in):
         if not signed_in:
@@ -142,7 +145,7 @@ class PAV_PT_main(Panel):
         from . import thumbs
         from .api import is_png_file
 
-        icon_value = thumbs.icon_id("listing_thumb", state.listing_thumb_file)
+        icon_value = thumbs.icon_id("listing_thumb", state.listing_thumb_file, rev=state.listing_thumb_rev)
         if icon_value:
             thumb.template_icon(icon_value=icon_value, scale=6.0)
         elif is_png_file(state.listing_thumb_file):
@@ -150,6 +153,7 @@ class PAV_PT_main(Panel):
         else:
             thumb.label(text="No PNG yet — capture or pick one.")
         thumb.prop(state, "listing_thumb_source", text="")
+        thumb.label(text="Capture again after switching Viewport / Camera.")
         row = thumb.row(align=True)
         row.operator("pav.capture_thumbnail", icon="RENDER_STILL")
         row.operator("pav.pick_thumbnail", icon="FILEBROWSER")
@@ -161,6 +165,17 @@ class PAV_PT_main(Panel):
         col.prop(state, "listing_short")
         col.prop(state, "listing_description")
         col.prop(state, "listing_tags")
+        row = details.row(align=True)
+        row.menu("PAV_MT_tags", text="Existing tags", icon="BOOKMARKS")
+        from .api import suggest_tags
+
+        known = [item.name for item in context.window_manager.pav_tags]
+        suggestions = suggest_tags(state.listing_tags, known, limit=6)
+        if suggestions:
+            sug = details.row(align=True)
+            for tag in suggestions:
+                op = sug.operator("pav.use_tag", text=tag)
+                op.tag = tag
         row = details.row(align=True)
         row.prop(state, "listing_price")
         row.prop(state, "listing_currency", text="")

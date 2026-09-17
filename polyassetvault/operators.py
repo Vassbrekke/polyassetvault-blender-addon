@@ -18,16 +18,20 @@ from .api import (
     ADDON_VERSION,
     CATEGORIES,
     LICENSE_ENUM,
+    SEED_TAGS,
     AddonAPIError,
     AddonClient,
+    apply_suggested_tag,
     build_listing_fields,
     category_api_slug,
     category_enum_id,
     category_enum_items,
+    collect_tags,
     find_cached_asset,
     is_png_file,
     listing_file_paths,
     login_page_url,
+    normalize_tags,
     pbr_workflow_api,
     product_cache_dir,
     product_page_url,
@@ -56,7 +60,15 @@ def _report_api(operator, exc: AddonAPIError):
     operator.report({"ERROR"}, str(exc))
 
 
-def _fill_products(collection, products, *, owned_default=False):
+def _remember_tags(wm, products) -> None:
+    existing = {item.name for item in wm.pav_tags}
+    for tag in list(SEED_TAGS) + collect_tags(products):
+        if tag and tag not in existing:
+            wm.pav_tags.add().name = tag
+            existing.add(tag)
+
+
+def _fill_products(collection, products, *, owned_default=False, wm=None):
     collection.clear()
     for product in products or []:
         item = collection.add()
@@ -74,6 +86,8 @@ def _fill_products(collection, products, *, owned_default=False):
         item.owned = bool(product.get("owned", owned_default))
         item.status = product.get("status") or ""
         item.thumbnail = product.get("thumbnail") or ""
+    if wm is not None:
+        _remember_tags(wm, products)
 
 
 def _active_product(collection, index):
@@ -235,7 +249,21 @@ def _redraw_view3d(context):
                 area.tag_redraw()
 
 
+def _set_listing_thumb(context, path: str) -> None:
+    from . import thumbs
+
+    state = context.window_manager.pav
+    thumbs.forget("listing_thumb")
+    state.listing_thumb_file = path
+    state.listing_thumb_rev += 1
+    _redraw_view3d(context)
+
+
 # ── Property groups ──────────────────────────────────────────────────────────
+
+
+class PAV_PG_tag(PropertyGroup):
+    """Marketplace tag name lives on PropertyGroup.name."""
 
 
 class PAV_PG_product(PropertyGroup):
@@ -334,6 +362,7 @@ class PAV_PG_state(PropertyGroup):
     )
     listing_engine: StringProperty(name="Target engine", default="Blender")
     listing_video: StringProperty(name="Video preview URL", default="")
+    listing_thumb_rev: IntProperty(default=0)
     status_message: StringProperty(name="Status", default="")
     account_name: StringProperty(default="")
     account_type: StringProperty(default="")
@@ -525,7 +554,7 @@ class PAV_OT_browse(Operator):
         except AddonAPIError as exc:
             _report_api(self, exc)
             return {"CANCELLED"}
-        _fill_products(context.window_manager.pav_browse, data.get("products") or [])
+        _fill_products(context.window_manager.pav_browse, data.get("products") or [], wm=context.window_manager)
         state.browse_index = 0
         state.status_message = f"{data.get('total', len(context.window_manager.pav_browse))} listing(s)"
         return {"FINISHED"}
@@ -545,6 +574,7 @@ class PAV_OT_refresh_library(Operator):
             context.window_manager.pav_library,
             data.get("purchases") or [],
             owned_default=True,
+            wm=context.window_manager,
         )
         context.window_manager.pav.status_message = (
             f"{data.get('total', len(context.window_manager.pav_library))} purchase(s)"
@@ -562,7 +592,7 @@ class PAV_OT_refresh_mine(Operator):
         except AddonAPIError as exc:
             _report_api(self, exc)
             return {"CANCELLED"}
-        _fill_products(context.window_manager.pav_mine, data.get("products") or [])
+        _fill_products(context.window_manager.pav_mine, data.get("products") or [], wm=context.window_manager)
         context.window_manager.pav.status_message = (
             f"{data.get('total', len(context.window_manager.pav_mine))} of your listing(s)"
         )
@@ -1069,6 +1099,9 @@ class PAV_OT_fill_listing(Operator):
         from .listing import apply_stats, scene_stats
 
         apply_stats(context.window_manager.pav, scene_stats(context), overwrite=True)
+        state = context.window_manager.pav
+        known = [item.name for item in context.window_manager.pav_tags]
+        state.listing_tags = normalize_tags(state.listing_tags, known)
         self.report({"INFO"}, "Listing fields filled from the scene.")
         return {"FINISHED"}
 
@@ -1087,7 +1120,7 @@ class PAV_OT_capture_thumbnail(Operator):
         if not written or not is_png_file(written):
             self.report({"ERROR"}, "Could not write a PNG thumbnail. Pick an image file instead.")
             return {"CANCELLED"}
-        state.listing_thumb_file = written
+        _set_listing_thumb(context, written)
         self.report({"INFO"}, "Thumbnail captured.")
         return {"FINISHED"}
 
@@ -1111,9 +1144,8 @@ class PAV_OT_pick_thumbnail(Operator, ImportHelper):
         if not written or not is_png_file(written):
             self.report({"ERROR"}, "Could not convert that image to PNG.")
             return {"CANCELLED"}
-        state = context.window_manager.pav
-        state.listing_thumb_source = "FILE"
-        state.listing_thumb_file = written
+        context.window_manager.pav.listing_thumb_source = "FILE"
+        _set_listing_thumb(context, written)
         self.report({"INFO"}, "Thumbnail set.")
         return {"FINISHED"}
 
@@ -1125,6 +1157,48 @@ class PAV_OT_open_prefs(Operator):
     def execute(self, context):
         bpy.ops.screen.userpref_show("INVOKE_DEFAULT")
         return {"FINISHED"}
+
+
+class PAV_OT_save_prefs(Operator):
+    bl_idname = "pav.save_prefs"
+    bl_label = "Save preferences now"
+    bl_description = "Write addon settings (download folder, site URL) to disk so they survive a restart"
+
+    def execute(self, context):
+        try:
+            bpy.ops.wm.save_userpref()
+        except Exception as exc:
+            self.report({"ERROR"}, f"Could not save preferences: {exc}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Preferences saved.")
+        return {"FINISHED"}
+
+
+class PAV_OT_use_tag(Operator):
+    bl_idname = "pav.use_tag"
+    bl_label = "Add tag"
+    bl_description = "Add this marketplace tag to the listing"
+    tag: StringProperty()
+
+    def execute(self, context):
+        state = context.window_manager.pav
+        known = [item.name for item in context.window_manager.pav_tags]
+        state.listing_tags = apply_suggested_tag(state.listing_tags, self.tag, known)
+        return {"FINISHED"}
+
+
+class PAV_MT_tags(Menu):
+    bl_label = "Existing tags"
+    bl_idname = "PAV_MT_tags"
+
+    def draw(self, context):
+        tags = [item.name for item in context.window_manager.pav_tags]
+        if not tags:
+            self.layout.label(text="Browse the catalog once to load more tags")
+            return
+        for tag in tags[:80]:
+            op = self.layout.operator("pav.use_tag", text=tag)
+            op.tag = tag
 
 
 class PAV_OT_show_asset_shelf(Operator):
@@ -1192,7 +1266,7 @@ class PAV_OT_sync_asset_browser(Operator):
             except AddonAPIError as exc:
                 _report_api(self, exc)
                 return {"CANCELLED"}
-            _fill_products(wm.pav_library, data.get("purchases") or [], owned_default=True)
+            _fill_products(wm.pav_library, data.get("purchases") or [], owned_default=True, wm=wm)
             items = list(wm.pav_library)
         if not items:
             self.report({"WARNING"}, "No purchases to sync.")
@@ -1340,6 +1414,7 @@ def _draw_add_menu(self, context):
 
 
 CLASSES = (
+    PAV_PG_tag,
     PAV_PG_product,
     PAV_PG_state,
     PAV_UL_products,
@@ -1360,6 +1435,9 @@ CLASSES = (
     PAV_OT_capture_thumbnail,
     PAV_OT_pick_thumbnail,
     PAV_OT_open_prefs,
+    PAV_OT_save_prefs,
+    PAV_OT_use_tag,
+    PAV_MT_tags,
     PAV_OT_show_asset_shelf,
     PAV_OT_open_asset_browser,
     PAV_OT_sync_asset_browser,
@@ -1374,6 +1452,11 @@ def register():
     bpy.types.WindowManager.pav_browse = bpy.props.CollectionProperty(type=PAV_PG_product)
     bpy.types.WindowManager.pav_library = bpy.props.CollectionProperty(type=PAV_PG_product)
     bpy.types.WindowManager.pav_mine = bpy.props.CollectionProperty(type=PAV_PG_product)
+    bpy.types.WindowManager.pav_tags = bpy.props.CollectionProperty(type=PAV_PG_tag)
+    try:
+        _remember_tags(bpy.context.window_manager, [])
+    except Exception:
+        pass
     bpy.types.VIEW3D_HT_header.append(_draw_view3d_header)
     bpy.types.TOPBAR_MT_file_import.append(_draw_file_import)
     bpy.types.VIEW3D_MT_add.append(_draw_add_menu)
@@ -1383,6 +1466,7 @@ def unregister():
     bpy.types.VIEW3D_MT_add.remove(_draw_add_menu)
     bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
     bpy.types.VIEW3D_HT_header.remove(_draw_view3d_header)
+    del bpy.types.WindowManager.pav_tags
     del bpy.types.WindowManager.pav_mine
     del bpy.types.WindowManager.pav_library
     del bpy.types.WindowManager.pav_browse

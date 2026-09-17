@@ -11,6 +11,15 @@ from .api import ADDON_VERSION
 ADDON_ID = __package__
 
 
+def _save_userpref(_self=None, _context=None) -> None:
+    if getattr(bpy.app, "background", False):
+        return
+    try:
+        bpy.ops.wm.save_userpref()
+    except Exception:
+        pass
+
+
 class PAV_AddonPreferences(AddonPreferences):
     bl_idname = ADDON_ID
 
@@ -18,11 +27,13 @@ class PAV_AddonPreferences(AddonPreferences):
         name="Site URL",
         description="PolyAssetVault website used for sign-in and checkout",
         default="https://polyassetvault.com",
+        update=_save_userpref,
     )
     api_base_url: StringProperty(
         name="API base URL",
         description="Backend origin. Production is the site URL. Local dev is http://localhost:5000",
         default="https://polyassetvault.com",
+        update=_save_userpref,
     )
     device_token: StringProperty(
         name="Device token",
@@ -44,6 +55,7 @@ class PAV_AddonPreferences(AddonPreferences):
         description="Where purchased files are stored. Leave the default to use a stable Asset Browser library folder.",
         default="//polyassetvault_library/",
         subtype="DIR_PATH",
+        update=_save_userpref,
     )
 
     def draw(self, context):
@@ -51,6 +63,7 @@ class PAV_AddonPreferences(AddonPreferences):
         layout.prop(self, "site_url")
         layout.prop(self, "api_base_url")
         layout.prop(self, "download_dir")
+        layout.operator("pav.save_prefs", icon="FILE_TICK", text="Save preferences now")
         row = layout.row()
         row.label(text=f"Addon version {ADDON_VERSION}")
         if self.get_token():

@@ -286,6 +286,22 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(api.listing_file_paths(str(fake), str(blend)), [str(blend)])
             self.assertEqual(api.format_file_size(2048), "2 KB")
 
+    def test_tag_normalize_and_suggest(self):
+        self.assertEqual(api.normalize_tags("Blender, blender, PBR, pbr"), "blender, pbr")
+        self.assertEqual(
+            api.apply_suggested_tag("blender, ani", "animated"),
+            "blender, animated",
+        )
+        self.assertEqual(api.apply_suggested_tag("blender", "pbr"), "blender, pbr")
+        self.assertIn("animated", api.suggest_tags("blender, ani"))
+        self.assertNotIn("blender", api.suggest_tags("blender"))
+        collected = api.collect_tags(
+            [{"tags": ["Low-Poly", "blender"]}, {"tags": "pbr, low-poly"}]
+        )
+        self.assertEqual(collected, ["low-poly", "blender", "pbr"])
+        fields = api.build_listing_fields(title="X", tags="Blender, BLENDER, PBR")
+        self.assertEqual(fields["tags"], "blender, pbr")
+
     def test_preview_file_helper(self):
         self.assertTrue(api.preview_file("/tmp/cache").endswith("preview.png"))
 
