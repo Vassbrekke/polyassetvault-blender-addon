@@ -996,6 +996,8 @@ class AddonClient:
         bearer: Optional[str] = None,
         timeout: Optional[int] = None,
     ) -> Any:
+        if not path.startswith("/") or path.startswith("//"):
+            raise AddonAPIError(0, "Invalid API path")
         url = join_url(self.api_base, path)
         if query:
             filtered = {k: v for k, v in query.items() if v is not None and v != ""}
@@ -1008,8 +1010,6 @@ class AddonClient:
             extra["Content-Type"] = "application/json"
         if bearer:
             extra["Authorization"] = f"Bearer {bearer}"
-        if not path.startswith("/") or path.startswith("//"):
-            raise AddonAPIError(0, "Invalid API path")
         req = urllib.request.Request(
             url,
             data=data,
@@ -1162,12 +1162,8 @@ class AddonClient:
             f"/api/addon/products/{path_segment(product_id)}/download", dest_path
         )
 
-    def create_product(
-        self,
-        fields: Mapping[str, str],
-        file_paths: Iterable[str],
-    ) -> dict:
-        files = []
+    def _upload_files(self, file_paths: Iterable[str]) -> list[tuple[str, str, bytes, str]]:
+        files: list[tuple[str, str, bytes, str]] = []
         for path in file_paths:
             name = os.path.basename(path)
             ctype = file_content_type(name)
@@ -1179,7 +1175,14 @@ class AddonClient:
                 raise AddonAPIError(0, "File too large to upload")
             with open(path, "rb") as handle:
                 files.append(("files", name, handle.read(), ctype))
-        return self.request_multipart("POST", "/api/addon/products", fields, files)
+        return files
+
+    def create_product(
+        self,
+        fields: Mapping[str, str],
+        file_paths: Iterable[str],
+    ) -> dict:
+        return self.request_multipart("POST", "/api/addon/products", fields, self._upload_files(file_paths))
 
     def update_product(
         self,
@@ -1187,14 +1190,11 @@ class AddonClient:
         fields: Mapping[str, str],
         file_paths: Iterable[str] = (),
     ) -> dict:
-        files = []
-        for path in file_paths:
-            name = os.path.basename(path)
-            ctype = file_content_type(name)
-            with open(path, "rb") as handle:
-                files.append(("files", name, handle.read(), ctype))
         return self.request_multipart(
-            "PUT", f"/api/addon/products/{path_segment(product_id)}", fields, files
+            "PUT",
+            f"/api/addon/products/{path_segment(product_id)}",
+            fields,
+            self._upload_files(file_paths),
         )
 
 
@@ -1223,7 +1223,7 @@ def find_cached_asset(cache_dir: str) -> Optional[str]:
         return None
     for name in sorted(names):
         path = os.path.join(cache_dir, name)
-        if not os.path.isfile(path):
+        if os.path.islink(path) or not os.path.isfile(path):
             continue
         lower = name.lower()
         if lower.endswith(".blend"):

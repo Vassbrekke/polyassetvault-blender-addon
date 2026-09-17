@@ -82,6 +82,23 @@ class FakeAddonAPI(BaseHTTPRequestHandler):
             self.send_header("Location", "https://evil.example/steal")
             self.end_headers()
             return
+        if self.path.startswith("/thumb.png"):
+            FakeAddonAPI.store["thumb_token"] = self.headers.get("X-Addon-Token")
+            data = b"\x89PNG\r\n\x1a\n" + b"rest"
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if self.path.startswith("/not-image"):
+            data = b"<html>not an image</html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path.startswith("/api/addon/products"):
             return self._send(
                 200,
@@ -387,6 +404,9 @@ class ApiTests(unittest.TestCase):
         with self.assertRaises(api.AddonAPIError):
             api.validate_base_url("https://user:pass@polyassetvault.com")
         with self.assertRaises(api.AddonAPIError):
+            api.validate_base_url("http://polyassetvault.com")
+        self.assertTrue(api.validate_base_url("http://127.0.0.1:5000").startswith("http://127.0.0.1"))
+        with self.assertRaises(api.AddonAPIError):
             api.login_page_url("javascript:alert(1)", 55555, "abc")
         with self.assertRaises(api.AddonAPIError):
             api.path_segment("../admin")
@@ -409,6 +429,23 @@ class ApiTests(unittest.TestCase):
                 client.download_to("file:///etc/passwd", dest)
             with self.assertRaises(api.AddonAPIError):
                 client.download_to("http://127.0.0.1:9/thumb.png", dest)
+
+    def test_download_to_omits_token_and_requires_image(self):
+        client = api.AddonClient(self.base, token="device-token-abc")
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = str(Path(tmp) / "preview.png")
+            saved = client.download_to("/thumb.png", dest)
+            self.assertEqual(saved, dest)
+            self.assertTrue(Path(dest).read_bytes().startswith(api.PNG_MAGIC))
+            self.assertIsNone(FakeAddonAPI.store.get("thumb_token"))
+            bad = str(Path(tmp) / "bad.png")
+            with self.assertRaises(api.AddonAPIError):
+                client.download_to("/not-image", bad)
+            self.assertFalse(Path(bad).exists())
+
+    def test_mark_blend_disables_autoexec(self):
+        text = (ROOT / "assets.py").read_text()
+        self.assertIn("--disable-autoexec", text)
 
     def test_blocks_cross_origin_redirect(self):
         client = api.AddonClient(self.base, token="device-token-abc")

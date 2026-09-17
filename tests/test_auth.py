@@ -38,6 +38,7 @@ class AuthServerTests(unittest.TestCase):
         good = urlencode({"token": "jwt-value", "state": callback.state})
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/callback?{good}", timeout=5) as resp:
             self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers.get("Content-Security-Policy"), "default-src 'none'")
             html = resp.read().decode("utf-8")
             self.assertIn("Signed in", html)
             self.assertNotIn("jwt-value", html)
