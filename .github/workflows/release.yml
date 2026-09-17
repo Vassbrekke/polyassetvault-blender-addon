@@ -1,0 +1,67 @@
+name: Release addon zip
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read addon version
+        id: version
+        run: python3 .github/scripts/read_version.py
+      - name: Check tag matches version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected="v${VERSION}"
+          if [ "$TAG_NAME" != "$expected" ]; then
+            echo "Tag $TAG_NAME does not match blender_manifest.toml version $VERSION"
+            exit 1
+          fi
+      - name: Pack zip
+        run: ./pack.sh
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          asset="polyassetvault-${VERSION}.zip"
+          mv polyassetvault-blender.zip "$asset"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists"
+            exit 0
+          fi
+          gh release create "$tag" "$asset" \
+            --title "PolyAssetVault ${VERSION}" \
+            --generate-notes

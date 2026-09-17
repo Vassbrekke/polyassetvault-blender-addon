@@ -10,13 +10,13 @@ The addon talks to your PolyAssetVault account in the browser. Checkout stays on
 
 ## Install
 
-1. In this folder, run:
+1. Download the zip from [Releases](https://github.com/N0L0g1c/polyassetvault-blender-addon/releases), or pack it here:
 
    ```bash
    ./pack.sh
    ```
 
-   That writes `polyassetvault-blender.zip` next to this README.
+   That writes `polyassetvault-blender.zip` next to this README. Pushing a version bump on `main` publishes a new GitHub Release zip.
 
 2. In Blender: **Edit → Preferences → Get Extensions → Install from Disk…**  
    (older layouts: **Add-ons → Install…**)

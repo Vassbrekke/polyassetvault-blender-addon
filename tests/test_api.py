@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -362,6 +363,11 @@ class ApiTests(unittest.TestCase):
         text = (ROOT / "thumbs.py").read_text()
         self.assertIn("import bpy.utils.previews as previews", text)
         self.assertIn("_pcoll = previews.new()", text)
+
+    def test_addon_versions_match(self):
+        script = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "read_version.py"
+        version = subprocess.check_output([sys.executable, str(script)], text=True).strip()
+        self.assertEqual(version, api.ADDON_VERSION)
 
     def test_catalog_definition_text(self):
         text = api.catalog_definition_text()
