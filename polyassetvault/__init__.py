@@ -7,7 +7,7 @@ bl_info = {
     "description": "Browse, buy, import, and list 3D assets on the PolyAssetVault marketplace",
     "category": "Import-Export",
     "doc_url": "https://polyassetvault.com",
-    "tracker_url": "https://polyassetvault.com",
+    "tracker_url": "https://github.com/Vassbrekke/polyassetvault-blender-addon/issues",
 }
 
 if "bpy" in locals():

@@ -31,7 +31,7 @@ class PAV_AddonPreferences(AddonPreferences):
     )
     api_base_url: StringProperty(
         name="API base URL",
-        description="Backend origin. Production is the site URL. Local dev is http://localhost:5000",
+        description="API origin. Leave the production default unless you were told to change it.",
         default="https://polyassetvault.com",
         update=_save_userpref,
     )
