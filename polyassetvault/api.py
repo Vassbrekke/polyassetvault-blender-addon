@@ -15,7 +15,7 @@ import urllib.request
 import zipfile
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.3.4"
+ADDON_VERSION = "0.3.5"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
@@ -473,6 +473,19 @@ def listing_blurb(meta: Mapping[str, Any], title: str) -> tuple[str, str]:
     lines.append(software)
     description = "\n".join(line for line in lines if line is not None).strip()
     return short[:500], description[:10000]
+
+
+def listing_price_error(price, *, stripe_connected: bool) -> str:
+    """Reject paid listings unless Stripe payouts are connected. Empty string if OK."""
+    try:
+        parsed = float(price or 0)
+    except (TypeError, ValueError):
+        parsed = 0.0
+    if parsed > 0 and parsed < 1:
+        return "Price must be free (0) or at least 1.00."
+    if parsed > 0 and not stripe_connected:
+        return "Connect Stripe on the website to list a paid product. Free listings (0) are allowed."
+    return ""
 
 
 def build_listing_fields(

@@ -176,7 +176,10 @@ class PAV_PT_main(Panel):
             for tag in suggestions:
                 op = sug.operator("pav.use_tag", text=tag)
                 op.tag = tag
+        if not state.stripe_connected:
+            details.label(text="No Stripe connected — only free listings (price 0).", icon="INFO")
         row = details.row(align=True)
+        row.enabled = bool(state.stripe_connected)
         row.prop(state, "listing_price")
         row.prop(state, "listing_currency", text="")
         col = details.column(align=True)

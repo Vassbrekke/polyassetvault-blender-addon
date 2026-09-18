@@ -265,6 +265,15 @@ class ApiTests(unittest.TestCase):
         self.assertIn(b"filename=\"download.blend\"", body)
         self.assertIn(b"ABC", body)
 
+    def test_listing_price_requires_stripe(self):
+        self.assertEqual(api.listing_price_error(0, stripe_connected=False), "")
+        self.assertEqual(api.listing_price_error(0.0, stripe_connected=False), "")
+        self.assertEqual(api.listing_price_error(12, stripe_connected=True), "")
+        self.assertIn("1.00", api.listing_price_error(0.5, stripe_connected=True))
+        self.assertIn("Stripe", api.listing_price_error(12, stripe_connected=False))
+        self.assertIn("Stripe", api.listing_price_error(1, stripe_connected=False))
+        self.assertEqual(api.listing_price_error(1, stripe_connected=True), "")
+
     def test_listing_fields_thumbnail_first(self):
         fields = api.build_listing_fields(
             title="Lamp",

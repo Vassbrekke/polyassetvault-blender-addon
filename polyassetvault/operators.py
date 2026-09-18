@@ -29,6 +29,7 @@ from .api import (
     find_cached_asset,
     is_png_file,
     listing_file_paths,
+    listing_price_error,
     login_page_url,
     normalize_tags,
     pbr_workflow_api,
@@ -282,12 +283,19 @@ class PAV_PG_product(PropertyGroup):
 def _on_tab_change(self, context):
     if getattr(self, "tab", "") != "LIST":
         return
+    if not getattr(self, "stripe_connected", False):
+        self.listing_price = 0.0
     try:
         from .listing import apply_stats, scene_stats
 
         apply_stats(self, scene_stats(context), overwrite=False)
     except Exception:
         pass
+
+
+def _on_stripe_connected(self, context):
+    if not getattr(self, "stripe_connected", False) and float(getattr(self, "listing_price", 0) or 0) > 0:
+        self.listing_price = 0.0
 
 
 class PAV_PG_state(PropertyGroup):
@@ -379,7 +387,7 @@ class PAV_PG_state(PropertyGroup):
     status_message: StringProperty(name="Status", default="")
     account_name: StringProperty(default="")
     account_type: StringProperty(default="")
-    stripe_connected: BoolProperty(default=False)
+    stripe_connected: BoolProperty(default=False, update=_on_stripe_connected)
     import_mode: EnumProperty(
         name="Import",
         items=(
@@ -533,6 +541,8 @@ class PAV_OT_logout(Operator):
         wm.pav_library.clear()
         wm.pav_mine.clear()
         wm.pav.account_name = ""
+        wm.pav.account_type = ""
+        wm.pav.stripe_connected = False
         wm.pav.status_message = "Signed out"
         self.report({"INFO"}, "Signed out.")
         return {"FINISHED"}
@@ -943,8 +953,26 @@ class PAV_OT_list_asset(Operator):
         if not title:
             return "Give the listing a title."
         price = float(state.listing_price or 0)
-        if price > 0 and price < 1:
-            return "Price must be free (0) or at least 1.00."
+        stripe_connected = bool(state.stripe_connected)
+        try:
+            me = _client(context).me()
+        except AddonAPIError as exc:
+            if exc.status == 401:
+                try:
+                    get_prefs(context).clear_token()
+                except Exception:
+                    pass
+                return "Session expired. Sign in again."
+            if price > 0:
+                return "Could not confirm payouts. Connect Stripe on the website, or list as free (0)."
+        else:
+            stripe_connected = bool(me.get("stripeConnected"))
+            state.account_name = me.get("displayName") or me.get("username") or state.account_name
+            state.account_type = me.get("userType") or state.account_type
+            state.stripe_connected = stripe_connected
+        err = listing_price_error(price, stripe_connected=stripe_connected)
+        if err:
+            return err
         if state.listing_scope == "SELECTED" and not context.selected_objects:
             return "Select objects to list, or switch to Entire file."
         return ""
@@ -1017,7 +1045,7 @@ class PAV_OT_list_asset(Operator):
             title=title,
             description=state.listing_description or title,
             short_description=state.listing_short or state.listing_description or title,
-            price=float(state.listing_price or 0),
+            price=0.0 if not state.stripe_connected else float(state.listing_price or 0),
             currency=state.listing_currency or "USD",
             category=state.listing_category,
             tags=state.listing_tags or "blender",

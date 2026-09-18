@@ -92,7 +92,7 @@ Select the objects you want to sell (or switch to **Entire file**).
 1. Open the **List** tab — empty fields fill from the selection.
 2. **Fill from scene** if you want a fresh read (title, tags, polys, size, UVs, PBR, rig, animation, engine, category).
 3. Frame the asset. **Capture thumbnail** (3D Viewport or Camera render) or **Pick thumbnail**. You should see the PNG in the panel. Capture again after switching Viewport / Camera.
-4. Set **price**, **license**, and **Draft / Published**. Draft is the safe default. Price is free (`0`) or at least `1.00`.
+4. Set **price**, **license**, and **Draft / Published**. Draft is the safe default. Price is free (`0`) or at least `1.00`. Paid prices need Stripe connected on the website; without it the listing stays free.
 5. Use **Existing tags** or the suggestion chips so spellings match the catalog.
 6. **Upload listing**.
 
