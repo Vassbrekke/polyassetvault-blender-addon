@@ -514,10 +514,32 @@ def _copy_as_png(src: str, dest: str) -> bool:
     try:
         image = bpy.data.images.load(src, check_existing=True)
         image.file_format = "PNG"
-        image.save_render(filepath=dest)
+        image.save(filepath=dest)
         return is_png_file(dest)
     except Exception:
         return False
+
+
+def _force_still_png(image_settings) -> None:
+    """Allow PNG output. Blender 5+ restricts file_format to FFMPEG while media_type is VIDEO."""
+    media_type = getattr(image_settings, "media_type", None)
+    if media_type is not None and media_type != "IMAGE":
+        image_settings.media_type = "IMAGE"
+    image_settings.file_format = "PNG"
+
+
+def _restore_image_format(image_settings, old_media, old_format) -> None:
+    if old_media is not None:
+        try:
+            image_settings.media_type = old_media
+        except (AttributeError, TypeError, ValueError):
+            pass
+        if old_media == "VIDEO":
+            return
+    try:
+        image_settings.file_format = old_format
+    except (TypeError, ValueError):
+        pass
 
 
 def write_thumbnail(context, dest: str, source: str = "VIEWPORT", custom: str = "") -> str:
@@ -525,8 +547,10 @@ def write_thumbnail(context, dest: str, source: str = "VIEWPORT", custom: str = 
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     scene = context.scene
     render = scene.render
+    image_settings = render.image_settings
     old_path = render.filepath
-    old_format = render.image_settings.file_format
+    old_format = image_settings.file_format
+    old_media = getattr(image_settings, "media_type", None)
     old_x = render.resolution_x
     old_y = render.resolution_y
     old_pct = render.resolution_percentage
@@ -536,7 +560,7 @@ def write_thumbnail(context, dest: str, source: str = "VIEWPORT", custom: str = 
             if _copy_as_png(custom, dest):
                 return dest
         render.filepath = dest
-        render.image_settings.file_format = "PNG"
+        _force_still_png(image_settings)
         render.resolution_x = 1024
         render.resolution_y = 1024
         render.resolution_percentage = 100
@@ -572,9 +596,11 @@ def write_thumbnail(context, dest: str, source: str = "VIEWPORT", custom: str = 
                 return dest
         if custom and _copy_as_png(custom, dest):
             return dest
+    except Exception:
+        pass
     finally:
         render.filepath = old_path
-        render.image_settings.file_format = old_format
+        _restore_image_format(image_settings, old_media, old_format)
         render.resolution_x = old_x
         render.resolution_y = old_y
         render.resolution_percentage = old_pct
