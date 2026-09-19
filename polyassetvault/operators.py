@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -26,7 +27,10 @@ from .api import (
     category_enum_id,
     category_enum_items,
     collect_tags,
+    download_github_release_zip,
+    fetch_github_latest_release,
     find_cached_asset,
+    is_newer_version,
     is_png_file,
     listing_file_paths,
     listing_price_error,
@@ -388,6 +392,7 @@ class PAV_PG_state(PropertyGroup):
     account_name: StringProperty(default="")
     account_type: StringProperty(default="")
     stripe_connected: BoolProperty(default=False, update=_on_stripe_connected)
+    update_latest: StringProperty(default="")
     import_mode: EnumProperty(
         name="Import",
         items=(
@@ -1256,6 +1261,92 @@ class PAV_OT_save_prefs(Operator):
         return {"FINISHED"}
 
 
+def _install_release_zip(filepath: str) -> None:
+    try:
+        bpy.ops.extensions.package_install_files(
+            filepath=filepath,
+            repo="user_default",
+            enable_on_install=True,
+            overwrite=True,
+        )
+        return
+    except TypeError:
+        try:
+            bpy.ops.extensions.package_install_files(
+                filepath=filepath,
+                enable_on_install=True,
+                overwrite=True,
+            )
+            return
+        except Exception:
+            pass
+    except Exception:
+        pass
+    bpy.ops.preferences.addon_install(filepath=filepath, overwrite=True)
+
+
+class PAV_OT_check_update(Operator):
+    bl_idname = "pav.check_update"
+    bl_label = "Check for update"
+    bl_description = "Ask GitHub Releases whether a newer PolyAssetVault zip is published"
+
+    def execute(self, context):
+        try:
+            release = fetch_github_latest_release()
+        except AddonAPIError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        version = release["version"]
+        state = context.window_manager.pav
+        state.update_latest = version
+        if is_newer_version(version, ADDON_VERSION):
+            state.status_message = f"Update {version} is available"
+            self.report({"INFO"}, f"Update {version} is available.")
+        else:
+            state.status_message = f"Addon {ADDON_VERSION} is the latest release"
+            self.report({"INFO"}, f"Already on {ADDON_VERSION}.")
+        return {"FINISHED"}
+
+
+class PAV_OT_install_update(Operator):
+    bl_idname = "pav.install_update"
+    bl_label = "Install update"
+    bl_description = "Download the latest official zip from GitHub and install it over this addon"
+
+    def execute(self, context):
+        try:
+            release = fetch_github_latest_release()
+        except AddonAPIError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        version = release["version"]
+        state = context.window_manager.pav
+        state.update_latest = version
+        if not is_newer_version(version, ADDON_VERSION):
+            state.status_message = f"Addon {ADDON_VERSION} is the latest release"
+            self.report({"INFO"}, f"Already on {ADDON_VERSION}.")
+            return {"CANCELLED"}
+        tmp = tempfile.mkdtemp(prefix="pav_update_")
+        zip_path = os.path.join(tmp, f"polyassetvault-{version}.zip")
+        try:
+            download_github_release_zip(version, zip_path)
+            _install_release_zip(zip_path)
+        except AddonAPIError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except Exception as exc:
+            self.report(
+                {"ERROR"},
+                f"Could not install the zip automatically ({exc}). Download it from GitHub Releases and use Install from Disk.",
+            )
+            return {"CANCELLED"}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        state.status_message = f"Installed {version}. Restart Blender."
+        self.report({"INFO"}, f"Installed {version}. Restart Blender to finish the update.")
+        return {"FINISHED"}
+
+
 class PAV_OT_use_tag(Operator):
     bl_idname = "pav.use_tag"
     bl_label = "Add tag"
@@ -1518,6 +1609,8 @@ CLASSES = (
     PAV_OT_pick_thumbnail,
     PAV_OT_open_prefs,
     PAV_OT_save_prefs,
+    PAV_OT_check_update,
+    PAV_OT_install_update,
     PAV_OT_use_tag,
     PAV_MT_tags,
     PAV_OT_show_asset_shelf,

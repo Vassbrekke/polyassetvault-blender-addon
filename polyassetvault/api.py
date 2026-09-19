@@ -29,8 +29,50 @@ MAX_PREVIEW_BYTES = 20 * 1024 * 1024
 MAX_ZIP_FILES = 4096
 MAX_ZIP_UNCOMPRESSED = 2 * 1024 * 1024 * 1024
 MAX_PRODUCT_ID_LEN = 128
+MAX_ADDON_ZIP_BYTES = 8 * 1024 * 1024
+MAX_RELEASE_JSON_BYTES = 256 * 1024
 ASSET_SUFFIXES = (".blend", ".zip")
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+GITHUB_REPO = "Vassbrekke/polyassetvault-blender-addon"
+GITHUB_LATEST_RELEASE = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_DOWNLOAD_HOSTS = frozenset(
+    {
+        "github.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+    }
+)
+GITHUB_HOSTS = GITHUB_DOWNLOAD_HOSTS | frozenset({"api.github.com"})
+_SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+_MANIFEST_ID = re.compile(r'(?m)^id = "polyassetvault"\s*$')
+_MANIFEST_VERSION = re.compile(r'(?m)^version = "([0-9]+\.[0-9]+\.[0-9]+)"\s*$')
+
+
+def parse_semver(value: str) -> Optional[tuple[int, int, int]]:
+    match = _SEMVER.fullmatch((value or "").strip())
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def semver_text(value: str) -> str:
+    parsed = parse_semver(value)
+    if parsed is None:
+        return ""
+    return f"{parsed[0]}.{parsed[1]}.{parsed[2]}"
+
+
+def is_newer_version(candidate: str, current: str) -> bool:
+    left = parse_semver(candidate)
+    right = parse_semver(current)
+    return bool(left and right and left > right)
+
+
+def official_release_zip_url(version: str) -> str:
+    parsed = semver_text(version)
+    if not parsed:
+        raise AddonAPIError(0, "Invalid release version")
+    return f"https://github.com/{GITHUB_REPO}/releases/download/v{parsed}/polyassetvault-{parsed}.zip"
 
 
 def catalog_definition_text(uuid: str = CATALOG_UUID, name: str = LIBRARY_NAME) -> str:
@@ -838,6 +880,154 @@ def _safe_opener() -> urllib.request.OpenerDirector:
     ):
         opener.add_handler(handler)
     return opener
+
+
+class GitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        current = req.get_full_url()
+        resolved = urllib.parse.urljoin(current, newurl.replace(" ", "%20"))
+        parsed = urllib.parse.urlparse(resolved)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme != "https" or parsed.username or parsed.password or host not in GITHUB_HOSTS:
+            raise urllib.error.URLError("blocked cross-origin redirect")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _github_opener() -> urllib.request.OpenerDirector:
+    opener = urllib.request.OpenerDirector()
+    context = ssl.create_default_context()
+    for handler in (
+        urllib.request.ProxyHandler(),
+        urllib.request.UnknownHandler(),
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        GitHubRedirectHandler(),
+        urllib.request.HTTPSHandler(context=context),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
+def parse_github_release(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise AddonAPIError(0, "Invalid release metadata")
+    if payload.get("draft") or payload.get("prerelease"):
+        raise AddonAPIError(0, "Latest GitHub release is not a stable build")
+    version = semver_text(str(payload.get("tag_name") or ""))
+    if not version:
+        raise AddonAPIError(0, "Invalid release version")
+    expected_name = f"polyassetvault-{version}.zip"
+    expected_url = official_release_zip_url(version)
+    for asset in payload.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        if str(asset.get("name") or "") != expected_name:
+            continue
+        try:
+            size = int(asset.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size <= 0 or size > MAX_ADDON_ZIP_BYTES:
+            raise AddonAPIError(0, "Release zip is missing or too large")
+        url = str(asset.get("browser_download_url") or "")
+        if url != expected_url:
+            raise AddonAPIError(0, "Release zip URL is not the official GitHub asset")
+        return {"version": version, "url": expected_url, "size": size, "name": expected_name}
+    raise AddonAPIError(0, "Release has no addon zip")
+
+
+def addon_zip_is_valid(path: str, version: str) -> bool:
+    expected = semver_text(version)
+    if not expected or not path or not os.path.isfile(path):
+        return False
+    if not zipfile.is_zipfile(path):
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            if len(names) > MAX_ZIP_FILES:
+                return False
+            for name in names:
+                if zip_member_relpath(name) is None:
+                    return False
+            if "polyassetvault/blender_manifest.toml" not in names:
+                return False
+            raw = archive.read("polyassetvault/blender_manifest.toml")
+            if len(raw) > 64 * 1024:
+                return False
+            text = raw.decode("utf-8")
+    except Exception:
+        return False
+    if not _MANIFEST_ID.search(text):
+        return False
+    match = _MANIFEST_VERSION.search(text)
+    return bool(match and match.group(1) == expected)
+
+
+def fetch_github_latest_release() -> dict[str, Any]:
+    req = urllib.request.Request(
+        GITHUB_LATEST_RELEASE,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": USER_AGENT,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method="GET",
+    )
+    try:
+        with _github_opener().open(req, timeout=DEFAULT_TIMEOUT) as resp:
+            final = urllib.parse.urlparse(resp.geturl())
+            host = (final.hostname or "").lower().rstrip(".")
+            if final.scheme != "https" or host != "api.github.com":
+                raise AddonAPIError(0, "Unexpected update server")
+            raw = _read_limited(resp, MAX_RELEASE_JSON_BYTES, "Release metadata")
+    except AddonAPIError:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise AddonAPIError(exc.code, "Could not read GitHub Releases") from exc
+    except Exception as exc:
+        raise AddonAPIError(0, "Could not reach GitHub Releases") from exc
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AddonAPIError(0, "Invalid release metadata") from exc
+    return parse_github_release(payload)
+
+
+def download_github_release_zip(version: str, dest_path: str) -> str:
+    url = official_release_zip_url(version)
+    dest_path = os.path.abspath(dest_path)
+    directory = os.path.dirname(dest_path) or "."
+    os.makedirs(directory, exist_ok=True)
+    if path_within(directory, os.path.basename(dest_path)) != dest_path:
+        raise AddonAPIError(0, "Invalid download path")
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/octet-stream", "User-Agent": USER_AGENT},
+        method="GET",
+    )
+    try:
+        with _github_opener().open(req, timeout=TRANSFER_TIMEOUT) as resp:
+            final = urllib.parse.urlparse(resp.geturl())
+            host = (final.hostname or "").lower().rstrip(".")
+            if final.scheme != "https" or host not in GITHUB_DOWNLOAD_HOSTS:
+                raise AddonAPIError(0, "Blocked request to an untrusted URL")
+            with _open_replace_file(dest_path) as handle:
+                _copy_limited(resp, handle, MAX_ADDON_ZIP_BYTES)
+    except AddonAPIError:
+        _unlink_quiet(dest_path)
+        raise
+    except urllib.error.HTTPError as exc:
+        _unlink_quiet(dest_path)
+        raise AddonAPIError(exc.code, "Could not download the update zip") from exc
+    except Exception as exc:
+        _unlink_quiet(dest_path)
+        raise AddonAPIError(0, "Could not download the update zip") from exc
+    if not addon_zip_is_valid(dest_path, version):
+        _unlink_quiet(dest_path)
+        raise AddonAPIError(0, "Downloaded file is not the official addon zip")
+    return dest_path
 
 
 def join_url(base: str, path: str) -> str:

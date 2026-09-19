@@ -24,7 +24,9 @@ Use the zip from Releases. Do not install a random folder copy from a clone unle
 
 ### Update
 
-Quit Blender. Install the newer zip over the old one. If enable fails, delete the previous install first, then install from disk again:
+On the **Account** tab, **Check for update** asks GitHub Releases for a newer zip. If one exists, **Install update** downloads that official file and installs it. Restart Blender afterwards.
+
+If automatic install fails (Windows often locks files that are in use), quit Blender, install the newer zip from [Releases](https://github.com/Vassbrekke/polyassetvault-blender-addon/releases), or delete the previous install first:
 
 | OS | Folder to remove |
 | --- | --- |

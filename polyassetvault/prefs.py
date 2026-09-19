@@ -70,6 +70,9 @@ class PAV_AddonPreferences(AddonPreferences):
             row.label(text="Signed in", icon="USER")
         else:
             row.label(text="Not signed in", icon="QUESTION")
+        row = layout.row(align=True)
+        row.operator("pav.check_update", icon="FILE_REFRESH")
+        row.operator("pav.install_update", icon="IMPORT")
 
     def get_token(self) -> str:
         return (self.stored_token or self.device_token or "").strip()

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -377,6 +378,65 @@ class ApiTests(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "read_version.py"
         version = subprocess.check_output([sys.executable, str(script)], text=True).strip()
         self.assertEqual(version, api.ADDON_VERSION)
+
+    def test_github_release_update_helpers(self):
+        self.assertEqual(api.semver_text("v1.2.3"), "1.2.3")
+        self.assertTrue(api.is_newer_version("0.3.6", "0.3.5"))
+        self.assertFalse(api.is_newer_version("0.3.5", "0.3.5"))
+        self.assertFalse(api.is_newer_version("0.3.4", "0.3.5"))
+        self.assertFalse(api.is_newer_version("nope", "0.3.5"))
+        self.assertEqual(
+            api.official_release_zip_url("v0.3.6"),
+            "https://github.com/Vassbrekke/polyassetvault-blender-addon/releases/download/v0.3.6/polyassetvault-0.3.6.zip",
+        )
+        parsed = api.parse_github_release(
+            {
+                "tag_name": "v0.3.6",
+                "draft": False,
+                "prerelease": False,
+                "assets": [
+                    {
+                        "name": "polyassetvault-0.3.6.zip",
+                        "size": 1234,
+                        "browser_download_url": api.official_release_zip_url("0.3.6"),
+                    }
+                ],
+            }
+        )
+        self.assertEqual(parsed["version"], "0.3.6")
+        with self.assertRaises(api.AddonAPIError):
+            api.parse_github_release({"tag_name": "v0.3.6", "prerelease": True, "assets": []})
+        with self.assertRaises(api.AddonAPIError):
+            api.parse_github_release(
+                {
+                    "tag_name": "v0.3.6",
+                    "assets": [
+                        {
+                            "name": "polyassetvault-0.3.6.zip",
+                            "size": 1234,
+                            "browser_download_url": "https://evil.example/polyassetvault-0.3.6.zip",
+                        }
+                    ],
+                }
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp) / "good.zip"
+            with zipfile.ZipFile(good, "w") as archive:
+                archive.writestr(
+                    "polyassetvault/blender_manifest.toml",
+                    'id = "polyassetvault"\nversion = "0.3.6"\n',
+                )
+                archive.writestr("polyassetvault/__init__.py", "bl_info = {}\n")
+            self.assertTrue(api.addon_zip_is_valid(str(good), "0.3.6"))
+            self.assertFalse(api.addon_zip_is_valid(str(good), "0.3.5"))
+            bad = Path(tmp) / "slip.zip"
+            with zipfile.ZipFile(bad, "w") as archive:
+                archive.writestr("../evil.py", "print(1)\n")
+                archive.writestr(
+                    "polyassetvault/blender_manifest.toml",
+                    'id = "polyassetvault"\nversion = "0.3.6"\n',
+                )
+            self.assertFalse(api.addon_zip_is_valid(str(bad), "0.3.6"))
 
     def test_catalog_definition_text(self):
         text = api.catalog_definition_text()

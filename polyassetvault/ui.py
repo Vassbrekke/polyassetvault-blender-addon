@@ -54,6 +54,19 @@ class PAV_PT_main(Panel):
         row.operator("pav.save_prefs", icon="FILE_TICK")
         row.operator("pav.open_prefs", icon="PREFERENCES", text="All settings")
 
+        from .api import ADDON_VERSION, is_newer_version
+
+        upd = layout.box()
+        upd.label(text=f"Addon {ADDON_VERSION}")
+        latest = (state.update_latest or "").strip()
+        if latest and is_newer_version(latest, ADDON_VERSION):
+            upd.label(text=f"Update {latest} is on GitHub")
+        elif latest:
+            upd.label(text="This is the latest release")
+        row = upd.row(align=True)
+        row.operator("pav.check_update", icon="FILE_REFRESH")
+        row.operator("pav.install_update", icon="IMPORT")
+
     def _draw_browse(self, layout, context, signed_in):
         if not signed_in:
             layout.label(text="Sign in on the Account tab first.")
