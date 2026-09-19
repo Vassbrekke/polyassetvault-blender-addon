@@ -15,7 +15,7 @@ import urllib.request
 import zipfile
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.3.5"
+ADDON_VERSION = "0.3.6"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
