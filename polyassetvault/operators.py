@@ -40,6 +40,7 @@ from .api import (
     pbr_workflow_api,
     product_cache_dir,
     product_page_url,
+    resolve_public_origin,
     safe_extract_zip,
     texture_resolution_api,
     validate_base_url,
@@ -53,7 +54,11 @@ _CATEGORY_FILTER = (("ALL", "All categories", ""),) + _CATEGORY_ITEMS
 
 def _client(context) -> AddonClient:
     prefs = get_prefs(context)
-    return AddonClient(prefs.api_base_url, token=prefs.get_token(), site_url=prefs.site_url)
+    return AddonClient(
+        resolve_public_origin(prefs.api_base_url),
+        token=prefs.get_token(),
+        site_url=resolve_public_origin(prefs.site_url),
+    )
 
 
 def _report_api(operator, exc: AddonAPIError):
@@ -445,8 +450,8 @@ class PAV_OT_login(Operator):
     def invoke(self, context, event):
         prefs = get_prefs(context)
         try:
-            validate_base_url(prefs.site_url)
-            validate_base_url(prefs.api_base_url)
+            validate_base_url(resolve_public_origin(prefs.site_url))
+            validate_base_url(resolve_public_origin(prefs.api_base_url))
         except AddonAPIError:
             self.report({"ERROR"}, "Site URL and API base URL must be http(s) with a host.")
             return {"CANCELLED"}
@@ -499,7 +504,10 @@ class PAV_OT_login(Operator):
     def _exchange(self, context, jwt: str):
         prefs = get_prefs(context)
         try:
-            client = AddonClient(prefs.api_base_url, site_url=prefs.site_url)
+            client = AddonClient(
+                resolve_public_origin(prefs.api_base_url),
+                site_url=resolve_public_origin(prefs.site_url),
+            )
             payload = client.issue_device_token(
                 jwt,
                 device_name=f"Blender {bpy.app.version_string}",

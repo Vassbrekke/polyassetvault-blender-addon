@@ -33,6 +33,7 @@ MAX_ADDON_ZIP_BYTES = 8 * 1024 * 1024
 MAX_RELEASE_JSON_BYTES = 256 * 1024
 ASSET_SUFFIXES = (".blend", ".zip")
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+PRODUCTION_ORIGIN = "https://polyassetvault.com"
 GITHUB_REPO = "Vassbrekke/polyassetvault-blender-addon"
 GITHUB_LATEST_RELEASE = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_DOWNLOAD_HOSTS = frozenset(
@@ -677,6 +678,28 @@ def validate_base_url(url: str) -> str:
     if parsed.scheme == "http" and host not in LOOPBACK_HOSTS:
         raise AddonAPIError(0, "HTTP is only allowed for localhost")
     return text.rstrip("/")
+
+
+def _allow_dev_loopback() -> bool:
+    return os.environ.get("POLYASSETVAULT_DEV", "").strip().lower() in {"1", "true", "yes"}
+
+
+def is_loopback_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse((url or "").strip())
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return host in LOOPBACK_HOSTS
+
+
+def resolve_public_origin(url: str) -> str:
+    """Site/API origin used for login and marketplace traffic.
+
+    Loopback is only for local Market work with POLYASSETVAULT_DEV=1.
+    Shipped plugins always sign in at polyassetvault.com.
+    """
+    text = (url or "").strip() or PRODUCTION_ORIGIN
+    if is_loopback_url(text) and not _allow_dev_loopback():
+        return PRODUCTION_ORIGIN
+    return validate_base_url(text)
 
 
 def is_browser_url(url: str) -> bool:
@@ -1464,7 +1487,7 @@ def find_cached_asset(cache_dir: str) -> Optional[str]:
 
 
 def product_page_url(site_url: str, product_id: str) -> str:
-    return join_url(validate_base_url(site_url), f"/product/{path_segment(product_id)}")
+    return join_url(resolve_public_origin(site_url), f"/product/{path_segment(product_id)}")
 
 
 def login_page_url(site_url: str, port: int, state: str) -> str:
@@ -1474,4 +1497,4 @@ def login_page_url(site_url: str, port: int, state: str) -> str:
     if not text or len(text) > 128:
         raise AddonAPIError(0, "Invalid login state")
     query = urllib.parse.urlencode({"port": port, "state": text})
-    return join_url(validate_base_url(site_url), f"/addon-login?{query}")
+    return join_url(resolve_public_origin(site_url), f"/addon-login?{query}")

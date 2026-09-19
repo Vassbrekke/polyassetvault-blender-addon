@@ -6,7 +6,7 @@ import bpy
 from bpy.props import StringProperty
 from bpy.types import AddonPreferences
 
-from .api import ADDON_VERSION
+from .api import ADDON_VERSION, resolve_public_origin
 
 ADDON_ID = __package__
 
@@ -87,7 +87,14 @@ class PAV_AddonPreferences(AddonPreferences):
 
 def get_prefs(context=None) -> PAV_AddonPreferences:
     ctx = context or bpy.context
-    return ctx.preferences.addons[ADDON_ID].preferences
+    prefs = ctx.preferences.addons[ADDON_ID].preferences
+    site = resolve_public_origin(prefs.site_url)
+    api = resolve_public_origin(prefs.api_base_url)
+    if site != (prefs.site_url or "").rstrip("/"):
+        prefs.site_url = site
+    if api != (prefs.api_base_url or "").rstrip("/"):
+        prefs.api_base_url = api
+    return prefs
 
 
 def register():

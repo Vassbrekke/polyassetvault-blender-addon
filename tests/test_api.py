@@ -183,6 +183,19 @@ class ApiTests(unittest.TestCase):
             "https://polyassetvault.com/product/xyz",
         )
 
+    def test_login_origin_is_not_localhost(self):
+        url = api.login_page_url("http://localhost:5173", 55555, "abc")
+        self.assertTrue(url.startswith("https://polyassetvault.com/addon-login?"))
+        self.assertNotIn("localhost", url)
+        self.assertEqual(
+            api.resolve_public_origin("http://127.0.0.1:5000"),
+            "https://polyassetvault.com",
+        )
+        self.assertEqual(
+            api.product_page_url("http://localhost:5173", "xyz"),
+            "https://polyassetvault.com/product/xyz",
+        )
+
     def test_absolute_thumbnail(self):
         self.assertEqual(
             api.absolute_url("https://polyassetvault.com", "/api/images/1/2?size=256"),
