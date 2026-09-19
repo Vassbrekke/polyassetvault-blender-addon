@@ -171,6 +171,16 @@ class PAV_PT_main(Panel):
         row.operator("pav.capture_thumbnail", icon="RENDER_STILL")
         row.operator("pav.pick_thumbnail", icon="FILEBROWSER")
 
+        glb = layout.box()
+        glb.label(text="3D preview")
+        from .api import is_glb_file
+
+        if is_glb_file(state.listing_glb_file):
+            glb.label(text="GLB ready — included when you upload.", icon="CHECKMARK")
+        else:
+            glb.label(text="Optional. Generate a GLB so the website 3D viewer works.")
+        glb.operator("pav.export_listing_glb", icon="MESH_CUBE")
+
         details = layout.box()
         details.label(text="Listing")
         col = details.column(align=True)

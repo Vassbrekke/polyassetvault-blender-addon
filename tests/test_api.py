@@ -245,18 +245,24 @@ class ApiTests(unittest.TestCase):
     def test_blend_content_type_and_multipart_order(self):
         self.assertEqual(api.file_content_type("lamp.blend"), "application/x-blender")
         self.assertEqual(api.file_content_type("preview.png"), "image/png")
+        self.assertEqual(api.file_content_type("lamp.glb"), "model/gltf-binary")
+        self.assertEqual(api.file_content_type("lamp.gltf"), "model/gltf+json")
         body, ctype = api.encode_multipart(
             {"title": "Lamp"},
             [
                 ("files", "preview.png", b"\x89PNG", "image/png"),
+                ("files", "Lamp.glb", b"glTF", "model/gltf-binary"),
                 ("files", "Lamp.blend", b"BLENDER-TEST", "application/x-blender"),
             ],
         )
         png_at = body.find(b"filename=\"preview.png\"")
+        glb_at = body.find(b"filename=\"Lamp.glb\"")
         blend_at = body.find(b"filename=\"Lamp.blend\"")
         self.assertGreaterEqual(png_at, 0)
-        self.assertGreater(blend_at, png_at)
+        self.assertGreater(glb_at, png_at)
+        self.assertGreater(blend_at, glb_at)
         self.assertIn(b"application/x-blender", body)
+        self.assertIn(b"model/gltf-binary", body)
         body, ctype = api.encode_multipart(
             {"title": "Chair"},
             [("files", "download.blend", b"ABC", "application/octet-stream")],
@@ -313,10 +319,18 @@ class ApiTests(unittest.TestCase):
             fake.write_bytes(b"not-a-png")
             self.assertTrue(api.is_png_file(str(png)))
             self.assertFalse(api.is_png_file(str(fake)))
-            paths = api.listing_file_paths(str(png), str(blend))
+            glb = Path(tmp) / "Lamp.glb"
+            bad_glb = Path(tmp) / "fake.glb"
+            glb.write_bytes(b"glTF" + (2).to_bytes(4, "little") + b"\x00" * 12)
+            bad_glb.write_bytes(b"not a glb file!!!!")
+            self.assertTrue(api.is_glb_file(str(glb)))
+            self.assertFalse(api.is_glb_file(str(bad_glb)))
+            paths = api.listing_file_paths(str(png), str(blend), str(glb))
             self.assertEqual(paths[0], str(png))
-            self.assertEqual(paths[1], str(blend))
-            self.assertEqual(api.listing_file_paths(str(fake), str(blend)), [str(blend)])
+            self.assertEqual(paths[1], str(glb))
+            self.assertEqual(paths[2], str(blend))
+            self.assertEqual(api.listing_file_paths(str(png), str(blend)), [str(png), str(blend)])
+            self.assertEqual(api.listing_file_paths(str(fake), str(blend), str(bad_glb)), [str(blend)])
             self.assertEqual(api.format_file_size(2048), "2 KB")
 
     def test_tag_normalize_and_suggest(self):

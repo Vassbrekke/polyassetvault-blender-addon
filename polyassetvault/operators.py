@@ -32,6 +32,7 @@ from .api import (
     find_cached_asset,
     is_newer_version,
     is_png_file,
+    is_glb_file,
     listing_file_paths,
     listing_price_error,
     login_page_url,
@@ -357,6 +358,7 @@ class PAV_PG_state(PropertyGroup):
         default="VIEWPORT",
     )
     listing_thumb_file: StringProperty(name="Thumbnail file", default="", subtype="FILE_PATH")
+    listing_glb_file: StringProperty(name="3D preview file", default="")
     listing_polygon: StringProperty(name="Polygons", default="")
     listing_rigged: BoolProperty(name="Rigged", default=False)
     listing_animated: BoolProperty(name="Animated", default=False)
@@ -983,7 +985,7 @@ class PAV_OT_list_asset(Operator):
         return ""
 
     def _begin(self, context, modal: bool):
-        from .listing import file_size_label, scene_stats, write_thumbnail
+        from .listing import file_size_label, glb_cache_path, scene_stats, write_thumbnail
 
         err = self._validate(context)
         if err:
@@ -993,8 +995,10 @@ class PAV_OT_list_asset(Operator):
         state.status_message = "Exporting listing…"
         title = (state.listing_title or "").strip()
         tmp = tempfile.mkdtemp(prefix="pav_list_")
-        blend_path = os.path.join(tmp, _safe_blend_name(title))
+        blend_name = _safe_blend_name(title)
+        blend_path = os.path.join(tmp, blend_name)
         thumb_path = os.path.join(tmp, "thumbnail.png")
+        glb_path = os.path.join(tmp, os.path.splitext(blend_name)[0] + ".glb")
         try:
             _export_listing_blend(context, blend_path, state.listing_scope)
             if is_png_file(state.listing_thumb_file):
@@ -1020,7 +1024,15 @@ class PAV_OT_list_asset(Operator):
             self.report({"ERROR"}, "Did not write a .blend to upload. Try Entire file.")
             return {"CANCELLED"}
 
-        files = listing_file_paths(thumb_path, blend_path)
+        cached_glb = os.path.abspath(glb_cache_path(context))
+        src_glb = os.path.abspath(state.listing_glb_file) if state.listing_glb_file else ""
+        if src_glb == cached_glb and is_glb_file(src_glb):
+            try:
+                shutil.copy2(src_glb, glb_path)
+            except OSError:
+                pass
+
+        files = listing_file_paths(thumb_path, blend_path, glb_path)
         if not files or not is_png_file(files[0]):
             self.report(
                 {"ERROR"},
@@ -1131,12 +1143,15 @@ class PAV_OT_list_asset(Operator):
         created = created or {}
         product = created.get("product") if isinstance(created.get("product"), dict) else created
         assets = (product or {}).get("assets") or []
+
+        def _asset_name(asset) -> str:
+            return str((asset or {}).get("originalName") or (asset or {}).get("filename") or "").lower()
+
         has_blend = any(
-            str((asset or {}).get("originalName") or (asset or {}).get("filename") or "")
-            .lower()
-            .endswith(".blend")
-            for asset in assets
-            if isinstance(asset, dict)
+            _asset_name(asset).endswith(".blend") for asset in assets if isinstance(asset, dict)
+        )
+        has_glb = any(
+            _asset_name(asset).endswith((".glb", ".gltf")) for asset in assets if isinstance(asset, dict)
         )
         has_thumb = any(
             bool((asset or {}).get("isThumbnail"))
@@ -1160,9 +1175,14 @@ class PAV_OT_list_asset(Operator):
             or ""
         )
         state = context.window_manager.pav
-        extra = " with .blend" if has_blend else " (check Files on the website)"
+        bits = []
+        if has_blend:
+            bits.append(".blend")
         if has_thumb:
-            extra += " and thumbnail"
+            bits.append("thumbnail")
+        if has_glb:
+            bits.append("3D preview")
+        extra = (" with " + ", ".join(bits)) if bits else " (check Files on the website)"
         state.status_message = f"Listed '{title}' as {status}{extra}" + (f" ({product_id})" if product_id else "")
         try:
             bpy.ops.pav.refresh_mine()
@@ -1234,6 +1254,29 @@ class PAV_OT_pick_thumbnail(Operator, ImportHelper):
         context.window_manager.pav.listing_thumb_source = "FILE"
         _set_listing_thumb(context, written)
         self.report({"INFO"}, "Thumbnail set.")
+        return {"FINISHED"}
+
+
+class PAV_OT_export_listing_glb(Operator):
+    bl_idname = "pav.export_listing_glb"
+    bl_label = "Generate 3D preview"
+    bl_description = "Export a GLB for the website 3D viewer. It is only uploaded when you list."
+
+    def execute(self, context):
+        from .listing import glb_cache_path, write_listing_glb
+
+        state = context.window_manager.pav
+        if state.listing_scope == "SELECTED" and not context.selected_objects:
+            self.report({"ERROR"}, "Select objects first, or switch to Entire file.")
+            return {"CANCELLED"}
+        dest = glb_cache_path(context)
+        written = write_listing_glb(context, dest, state.listing_scope)
+        if not written or not is_glb_file(written):
+            self.report({"ERROR"}, "Could not export a GLB. Enable Blender’s glTF exporter and try again.")
+            return {"CANCELLED"}
+        state.listing_glb_file = written
+        _redraw_view3d(context)
+        self.report({"INFO"}, "3D preview ready. Upload listing to send it with the .blend.")
         return {"FINISHED"}
 
 
@@ -1607,6 +1650,7 @@ CLASSES = (
     PAV_OT_fill_listing,
     PAV_OT_capture_thumbnail,
     PAV_OT_pick_thumbnail,
+    PAV_OT_export_listing_glb,
     PAV_OT_open_prefs,
     PAV_OT_save_prefs,
     PAV_OT_check_update,

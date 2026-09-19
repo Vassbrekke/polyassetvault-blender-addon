@@ -15,7 +15,7 @@ import urllib.request
 import zipfile
 from typing import Any, Iterable, Mapping, Optional
 
-ADDON_VERSION = "0.3.6"
+ADDON_VERSION = "0.3.7"
 USER_AGENT = f"PolyAssetVault-Blender/{ADDON_VERSION}"
 DEFAULT_TIMEOUT = 30
 TRANSFER_TIMEOUT = 300
@@ -166,6 +166,7 @@ PBR_API = {
     "specular_glossiness": "specular-glossiness",
 }
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+GLB_MAGIC = b"glTF"
 
 
 def listing_category_slug(enum_id: str) -> str:
@@ -198,11 +199,29 @@ def is_png_file(path: str) -> bool:
         return False
 
 
-def listing_file_paths(thumbnail_path: str, blend_path: str) -> list[str]:
-    """PNG thumbnail first (Market treats files[0] as the listing thumb), then .blend."""
+def is_glb_file(path: str) -> bool:
+    """True for a glTF Binary (.glb) with a version-2 header. Used for the site 3D viewer."""
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(8)
+        if len(header) < 8 or header[:4] != GLB_MAGIC:
+            return False
+        if int.from_bytes(header[4:8], "little") != 2:
+            return False
+        return os.path.getsize(path) >= 20
+    except OSError:
+        return False
+
+
+def listing_file_paths(thumbnail_path: str, blend_path: str, glb_path: str = "") -> list[str]:
+    """PNG first (catalog thumb), then GLB (site 3D viewer), then .blend (download)."""
     paths: list[str] = []
     if is_png_file(thumbnail_path):
         paths.append(thumbnail_path)
+    if is_glb_file(glb_path):
+        paths.append(glb_path)
     if blend_path and os.path.isfile(blend_path):
         paths.append(blend_path)
     return paths
@@ -1094,6 +1113,10 @@ def file_content_type(filename: str) -> str:
     name = (filename or "").lower()
     if name.endswith(".blend"):
         return "application/x-blender"
+    if name.endswith(".glb"):
+        return "model/gltf-binary"
+    if name.endswith(".gltf"):
+        return "model/gltf+json"
     if name.endswith(".png"):
         return "image/png"
     if name.endswith(".jpg") or name.endswith(".jpeg"):

@@ -95,12 +95,13 @@ Select the objects you want to list (or switch to **Entire file**).
 1. Open the **List** tab — empty fields fill from the selection.
 2. **Fill from scene** if you want a fresh read (title, tags, polys, size, UVs, PBR, rig, animation, engine, category).
 3. Frame the asset. **Capture thumbnail** (3D Viewport or Camera render) or **Pick thumbnail**. You should see the PNG in the panel. Capture again after switching Viewport / Camera.
-4. Set **price**, **license**, and **Draft / Published**. Draft is the safe default. Price is free (`0`) or at least `1.00`.
-5. Paid listings require Stripe payouts connected on the website. Without Stripe, the addon only allows free listings.
-6. Use **Existing tags** or the suggestion chips so spellings match the catalog.
-7. **Upload listing**.
+4. Optional: **Generate 3D preview** to export a `.glb` for the website 3D viewer. Skip this if you only want the `.blend`.
+5. Set **price**, **license**, and **Draft / Published**. Draft is the safe default. Price is free (`0`) or at least `1.00`.
+6. Paid listings require Stripe payouts connected on the website. Without Stripe, the addon only allows free listings.
+7. Use **Existing tags** or the suggestion chips so spellings match the catalog.
+8. **Upload listing**.
 
-The PNG is sent first (that is the catalog thumbnail), then the `.blend`. Upload refuses to continue without a real PNG. After a successful list, **Open on site** to review.
+The PNG is sent first (catalog thumbnail). If you generated a 3D preview, that `.glb` is sent next. Then the `.blend` buyers download. Upload refuses to continue without a real PNG. After a successful list, **Open on site** to review.
 
 You still choose price, license, and whether it goes live. Everything else is filled from the scene so you do not have to re-enter it on the website.
 
@@ -141,6 +142,9 @@ Capture or pick a PNG *before* upload. If the first file is the `.blend`, the si
 
 **Listing has no `.blend`.**  
 Use **Entire file** if Selected export is empty.
+
+**Listing has no 3D viewer on the site.**  
+Click **Generate 3D preview** on the List tab before **Upload listing**, or add a GLB under Preview on the website.
 
 **Could not write a PNG thumbnail / FFmpeg error.**  
 Use 0.3.5 or newer. Capture still works when the scene is set to video output.

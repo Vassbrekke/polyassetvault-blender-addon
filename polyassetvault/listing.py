@@ -13,18 +13,28 @@ from .api import (
     format_polycount,
     infer_category,
     infer_tags,
+    is_glb_file,
     is_png_file,
     listing_blurb,
     title_from_identifier,
 )
 
 THUMB_NAME = "thumbnail.png"
+GLB_NAME = "preview.glb"
+
+
+def _listing_cache_dir() -> str:
+    folder = os.path.join(tempfile_fallback(), "_listing")
+    os.makedirs(folder, exist_ok=True)
+    return folder
 
 
 def thumb_cache_path(context) -> str:
-    folder = os.path.join(tempfile_fallback(), "_listing")
-    os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, THUMB_NAME)
+    return os.path.join(_listing_cache_dir(), THUMB_NAME)
+
+
+def glb_cache_path(context) -> str:
+    return os.path.join(_listing_cache_dir(), GLB_NAME)
 
 
 def tempfile_fallback() -> str:
@@ -613,3 +623,64 @@ def file_size_label(path: str) -> str:
         return format_file_size(os.path.getsize(path))
     except OSError:
         return ""
+
+
+def _ensure_gltf_exporter() -> bool:
+    try:
+        import addon_utils
+
+        addon_utils.enable("io_scene_gltf2", default_set=False, persistent=False)
+    except Exception:
+        pass
+    return getattr(getattr(bpy.ops, "export_scene", None), "gltf", None) is not None
+
+
+def write_listing_glb(context, dest: str, scope: str = "SELECTED") -> str:
+    """Write a self-contained .glb for the website 3D viewer. Empty string if export fails.
+
+    Modifiers are applied in the preview file only; the uploaded .blend is unchanged.
+    """
+    if not _ensure_gltf_exporter():
+        return ""
+    if scope == "SELECTED" and not (context.selected_objects or []):
+        return ""
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    kwargs = {
+        "filepath": dest,
+        "check_existing": False,
+        "export_format": "GLB",
+        "use_selection": scope == "SELECTED",
+        "export_cameras": False,
+        "export_lights": False,
+        "export_yup": True,
+        "export_materials": "EXPORT",
+        "export_texcoords": True,
+        "export_normals": True,
+        "export_apply": True,
+        "export_extras": False,
+    }
+    slim = {
+        "filepath": dest,
+        "check_existing": False,
+        "export_format": "GLB",
+        "use_selection": scope == "SELECTED",
+    }
+
+    def _run(args: dict) -> None:
+        override = _view3d_override(context)
+        if override:
+            with context.temp_override(**override):
+                bpy.ops.export_scene.gltf("EXEC_DEFAULT", **args)
+        else:
+            bpy.ops.export_scene.gltf("EXEC_DEFAULT", **args)
+
+    try:
+        _run(kwargs)
+    except TypeError:
+        try:
+            _run(slim)
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return dest if is_glb_file(dest) else ""
